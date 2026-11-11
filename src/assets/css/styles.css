@@ -4337,3 +4337,39 @@ body.platform-linux .now-playing-panel {
     white-space: normal;
     color: rgba(255, 255, 255, 0.85);
 }
+
+/* ---- Song fixer (settings → library → fix song info) ---- */
+.settings-custom { margin-left: 8px; max-width: 1100px; display: flex; flex-direction: column; gap: 10px; padding-bottom: 60px; }
+.song-fixer .zune-diff-tabs { margin-bottom: 4px; }
+.song-fixer-note { color: var(--zune-text-secondary, #b0b0b0); font-size: 14px; font-weight: 300; line-height: 1.5; max-width: 720px; }
+.song-fixer-key-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.song-fixer-key-input { max-width: 360px; }
+.song-fixer-dim { color: var(--zune-text-dim); font-size: 14px; }
+.song-fixer-link {
+  background: none; border: none; padding: 0; cursor: pointer; font-family: inherit;
+  font-size: 14px; font-weight: 300; color: var(--zune-text-dim); text-transform: lowercase;
+}
+.song-fixer-link:hover { color: #fff; }
+.song-fixer-strong { color: var(--zune-orange); }
+.song-fixer-actions { justify-content: flex-start; gap: 32px; }
+.song-fixer-status { color: var(--zune-text-secondary, #b0b0b0); font-size: 13px; min-height: 18px; }
+.song-fixer-list .zune-diff-item { align-items: flex-start; padding: 10px 4px; }
+.song-fixer-list .zune-diff-check { margin-top: 3px; }
+.song-fixer-list .zune-diff-title { font-size: 14px; }
+.song-fixer-list .zune-diff-meta { font-size: 12px; }
+.song-fixer-result { font-size: 13px; color: #ddd; white-space: normal; }
+.song-fixer-result:empty { display: none; }
+.song-fixer-result.dim { color: var(--zune-text-dim); }
+.song-fixer-result.bad { color: #ff5555; }
+.song-fixer-result.good { color: #7bd88f; }
+.song-fixer-arrow { color: var(--zune-orange); }
+.song-fixer-changed { color: var(--zune-orange); }
+.song-fixer-score { color: var(--zune-text-dim); font-size: 12px; }
+.song-fixer-row.state-working .song-fixer-result { color: var(--zune-text-dim); font-style: italic; }
+.song-fixer-row.state-applied { opacity: 0.6; }
+.song-fixer-album-select {
+  margin-left: 12px; background: #1a1a1a; color: #ddd; border: 1px solid #333; border-radius: 4px;
+  font-family: inherit; font-size: 12px; padding: 2px 6px; max-width: 320px;
+}
+.song-fixer-more { margin: 12px 4px; }
+.song-fixer-actions .zune-sync-btn:disabled { color: rgba(255, 255, 255, 0.15) !important; }

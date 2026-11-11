@@ -51,12 +51,20 @@ class SettingsView {
     const content = document.createElement('div');
     content.className = 'category-content settings-content';
 
-    const list = document.createElement('div');
-    list.className = 'settings-list';
-    for (const item of page.buildItems()) {
-      list.appendChild(this._renderItem(item));
+    if (page.renderContent) {
+      // Custom page (e.g. the song fixer) draws its own content
+      const custom = document.createElement('div');
+      custom.className = 'settings-custom';
+      content.appendChild(custom);
+      page.renderContent(custom);
+    } else {
+      const list = document.createElement('div');
+      list.className = 'settings-list';
+      for (const item of page.buildItems()) {
+        list.appendChild(this._renderItem(item));
+      }
+      content.appendChild(list);
     }
-    content.appendChild(list);
     view.appendChild(content);
     fileDisplay.appendChild(view);
   }
@@ -122,6 +130,14 @@ class SettingsView {
         kind: 'nav',
         label: 'picture folders',
         onClick: () => this.push({ title: 'picture folders', buildItems: () => this._folderListItems('pictures') }),
+      },
+      {
+        kind: 'nav',
+        label: 'fix song info',
+        onClick: () => {
+          if (!this.songFixer) this.songFixer = new window.SongFixerView(this.explorer);
+          this.push({ title: 'fix songs', renderContent: (el) => this.songFixer.render(el) });
+        },
       },
       {
         kind: 'toggle',

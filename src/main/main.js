@@ -10,6 +10,7 @@ const { ZuneManager } = require('./zune/zune-manager');
 const { DeviceCache } = require('./zune/device-cache');
 const { MetadataCache } = require('./metadata-cache.js');
 const musicbrainz = require('./musicbrainz.js');
+const { SongFixer } = require('./song-fixer.js');
 const { ArtistImages } = require('./artist-images');
 const { getFanartApiKey } = require('./app-config');
 const PodcastManager = require('./podcast-manager');
@@ -22,6 +23,7 @@ const ffmpegPath = require('ffmpeg-static');
 const zuneManager = new ZuneManager();
 let deviceCache = null; // initialized after app.whenReady
 let metadataCache;
+let songFixer;
 let artistImages = null;
 let podcastManager = null;
 
@@ -100,6 +102,11 @@ function createWindow() {
 app.whenReady().then(async () => {
   deviceCache = new DeviceCache(app.getPath('userData'));
   metadataCache = new MetadataCache(app.getPath('userData'));
+  songFixer = new SongFixer({
+    ffmpegPath,
+    dataDir: app.getPath('userData'),
+    fetchBinary: musicbrainz.fetchUnlimited,
+  });
   artistImages = new ArtistImages(app.getPath('userData'), {
     searchArtists: musicbrainz.searchArtists,
     fetchJson: musicbrainz.fetchJsonUnlimited,
@@ -1053,6 +1060,45 @@ ipcMain.handle('metadata-fetch', async (event, mbid) => {
     const albumArt = await musicbrainz.getCoverArt(mbid);
     const result = { ...release, albumArt };
     return { success: true, result };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+// Song fixer: recognise songs by audio (AcoustID) and rewrite their tags
+ipcMain.handle('song-fixer-identify', async (event, filePath) => {
+  try {
+    if (typeof filePath !== 'string' || !isAllowedPath(filePath)) throw new Error('Path not allowed');
+    const key = (preferences.get('songFixer.acoustidKey') || '').trim();
+    const result = await songFixer.identify(filePath, key);
+    return { success: true, ...result };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('song-fixer-apply', async (event, batchId, filePath, tags, opts) => {
+  try {
+    if (!/^\d+$/.test(String(batchId))) throw new Error('Bad batch id');
+    if (typeof filePath !== 'string' || !isAllowedPath(filePath)) throw new Error('Path not allowed');
+    const allowed = ['title', 'artist', 'album', 'albumArtist', 'year', 'trackNumber', 'discNumber'];
+    const clean = {};
+    for (const k of allowed) if (tags && k in tags) clean[k] = tags[k] == null ? '' : String(tags[k]).slice(0, 500);
+    const result = await songFixer.apply(String(batchId), filePath, clean, {
+      releaseGroupId: /^[0-9a-f-]{36}$/i.test(opts?.releaseGroupId || '') ? opts.releaseGroupId : null,
+      addCover: opts?.addCover !== false,
+    });
+    return { success: true, ...result };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('song-fixer-undo-info', async () => songFixer.undoInfo());
+
+ipcMain.handle('song-fixer-undo', async () => {
+  try {
+    return { success: true, ...(await songFixer.undoLast()) };
   } catch (error) {
     return { success: false, error: error.message };
   }

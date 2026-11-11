@@ -20,6 +20,7 @@ function defaultPrefs(defaultHome) {
     sync: { pullDestination: null },
     podcasts: { downloadDirectory: null },
     artistImages: { enabled: false },
+    songFixer: { acoustidKey: '' },
     screensaver: { autoStart: true, idleMinutes: 2 },
     meta: {
       installedVersion: null,

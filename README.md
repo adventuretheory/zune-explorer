@@ -29,6 +29,7 @@ Built with Electron. Runs on macOS, Windows, and Linux.
 - Recently accessed files surfaced via platform-native APIs
 
 ### Metadata Enrichment
+- **Fix song info** (Settings → library) — finds songs with missing or junk tags (unknown album, GUID artists, website names), recognises them by their audio with [AcoustID](https://acoustid.org) and proposes the right title, artist, album, year and track number. Review every change before it's written; audio is never re-encoded, cover art is added when missing, and the last batch can be undone. Needs a free AcoustID API key
 - **MusicBrainz lookup** — search for album metadata by artist and album name
 - **Cover Art Archive** integration — fetch album art from the open cover art database
 - **Preview before applying** — review matched results with thumbnails before committing
