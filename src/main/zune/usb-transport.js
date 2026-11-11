@@ -175,6 +175,21 @@ class UsbTransport {
     return Buffer.from(result.data.buffer, result.data.byteOffset, result.data.byteLength);
   }
 
+  /**
+   * Set a libusb-level timeout (ms) on the bulk endpoints; 0 = wait forever.
+   * Unlike a Promise.race timeout, this actually cancels the USB transfer, so
+   * no stray read is left behind to swallow the next command's reply.
+   */
+  setTransferTimeout(ms) {
+    if (!this.device || typeof this.device.getEndpoint !== 'function') return;
+    for (const addr of [this.bulkInEndpoint | 0x80, this.bulkOutEndpoint]) {
+      try {
+        const ep = this.device.getEndpoint(addr);
+        if (ep) ep.timeout = ms;
+      } catch (_) { /* best-effort */ }
+    }
+  }
+
   async clearHalt(direction) {
     try {
       const epNum = direction === 'in' ? this.bulkInEndpoint : this.bulkOutEndpoint;

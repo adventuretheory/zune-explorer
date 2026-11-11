@@ -2046,6 +2046,8 @@ class ZuneSyncPanel {
         const pullProgressHandler = window.electronAPI.onZunePullProgress?.((p) => {
             if (p.phase === 'resolving') {
                 pullBtn.textContent = 'scanning zune for files \u2014 ' + p.scanned + ' checked';
+            } else if (p.phase === 'recovering') {
+                pullBtn.textContent = 'zune stopped responding \u2014 reconnecting\u2026';
             }
         });
 
@@ -2086,7 +2088,8 @@ class ZuneSyncPanel {
                         // Retrying can't help once the device is gone, or when it
                         // simply doesn't have the file.
                         if (/disconnected|No Zune device connected/i.test(err.message)) { disconnected = true; break; }
-                        if (/Could not locate/i.test(err.message)) break;
+                        // Each stall already costs a 20s wait plus a reconnect; skip, don't retry.
+                        if (/Could not locate|stopped responding/i.test(err.message)) break;
                         if (attempt < MAX_RETRIES) {
                             await new Promise(r => setTimeout(r, 500));
                         }

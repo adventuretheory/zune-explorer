@@ -346,8 +346,18 @@ class MtpProtocol {
   async getObject(objectHandle) {
     await this.sendCommand(OperationCode.GetObject, [objectHandle]);
     const data = await this.receiveData();
+    // If the device rejects the request (e.g. InvalidObjectHandle) it sends a
+    // RESPONSE with no DATA phase. Waiting for another container would hang.
+    if (data.type === ContainerType.RESPONSE) this._throwForResponse(data, 'GetObject');
     await this.receiveResponse();
     return data.payload;
+  }
+
+  _throwForResponse(container, label) {
+    const codeName = ResponseCodeName[container.code] || `0x${container.code.toString(16).padStart(4, '0')}`;
+    const err = new Error(`MTP ${label} failed: ${codeName}`);
+    err.code = container.code;
+    throw err;
   }
 
   async deleteObject(objectHandle) {

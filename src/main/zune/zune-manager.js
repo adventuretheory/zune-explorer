@@ -825,34 +825,8 @@ class ZuneManager extends EventEmitter {
    * If not, build a filename→handle map lazily when files are actually pulled.
    */
   async _probeZMDBHandles(zmdbResult) {
-    if (!zmdbResult.music.length) return;
-
-    // Try GetObject with the first track's atomId to see if it works
-    const probe = zmdbResult.music[0];
-    console.log(`ZuneManager: probing GetObject with atomId 0x${probe.handle.toString(16)} (filename: "${probe.filename}")...`);
-
-    try {
-      const data = await Promise.race([
-        this.mtp.getObject(probe.handle),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000)),
-      ]);
-      if (data && data.length > 0) {
-        console.log(`ZuneManager: GetObject(atomId) works! Got ${data.length} bytes — ZMDB handles are valid MTP handles`);
-        this.zmdbHandlesValid = true;
-        return;
-      }
-    } catch (err) {
-      console.log(`ZuneManager: GetObject(atomId) failed: ${err.message}`);
-      // Clear any USB pipe stalls
-      try { await this.transport.clearHalt('in'); } catch (_) {}
-      try { await this.transport.clearHalt('out'); } catch (_) {}
-    }
-
-    // Atom IDs don't work as handles — need to resolve at pull time
-    this.zmdbHandlesValid = false;
-    console.log('ZuneManager: ZMDB atom IDs are not valid MTP handles — will resolve on pull');
-
-    // Remember filename + size for each ZMDB entry so we can match at pull time
+    // Remember filename + size for each ZMDB entry so files can be located by
+    // scanning the device if their atom ID doesn't work as an MTP handle.
     this._zmdbEntries = [];
     for (const cat of ['music', 'videos', 'pictures']) {
       for (const item of zmdbResult[cat]) {
@@ -861,6 +835,30 @@ class ZuneManager extends EventEmitter {
         }
       }
     }
+
+    if (!zmdbResult.music.length) return;
+
+    // Try GetObject with the first track's atomId to see if it works
+    const probe = zmdbResult.music[0];
+    console.log(`ZuneManager: probing GetObject with atomId 0x${probe.handle.toString(16)} (filename: "${probe.filename}")...`);
+
+    try {
+      const data = await this._withUsbTimeout(5000, () => this.mtp.getObject(probe.handle));
+      if (data && data.length > 0) {
+        console.log(`ZuneManager: GetObject(atomId) works! Got ${data.length} bytes — ZMDB handles are valid MTP handles`);
+        this.zmdbHandlesValid = true;
+        return;
+      }
+    } catch (err) {
+      console.log(`ZuneManager: GetObject(atomId) failed: ${err.message}`);
+      if (this._isStall(err)) {
+        try { await this._recoverSession(); } catch (_) { return; }
+      }
+    }
+
+    // Atom IDs don't work as handles — need to resolve at pull time
+    this.zmdbHandlesValid = false;
+    console.log('ZuneManager: ZMDB atom IDs are not valid MTP handles — will resolve on pull');
   }
 
   /** Forget handle-resolution state (new browse, or device unplugged). */
@@ -885,9 +883,9 @@ class ZuneManager extends EventEmitter {
     const seen = new Set();
     let complete = true;
 
-    const clearPipes = async () => {
-      try { await this.transport.clearHalt('in'); } catch (_) {}
-      try { await this.transport.clearHalt('out'); } catch (_) {}
+    const onError = async (err) => {
+      complete = false;
+      if (this._isStall(err)) await this._recoverSession();
     };
 
     while (folderQueue.length > 0) {
@@ -895,14 +893,10 @@ class ZuneManager extends EventEmitter {
       const parent = folderQueue.shift();
       let handles;
       try {
-        handles = await Promise.race([
-          this.mtp.getObjectHandles(this.storageId, 0, parent),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 10000)),
-        ]);
+        handles = await this._withUsbTimeout(10000, () => this.mtp.getObjectHandles(this.storageId, 0, parent));
       } catch (err) {
         console.log(`ZuneManager: handle cache — folder ${parent} unreadable: ${err.message}`);
-        complete = false;
-        await clearPipes();
+        await onError(err);
         continue;
       }
 
@@ -910,15 +904,11 @@ class ZuneManager extends EventEmitter {
         if (seen.has(h)) continue;
         seen.add(h);
         try {
-          const info = await Promise.race([
-            this.mtp.getObjectInfo(h),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000)),
-          ]);
+          const info = await this._withUsbTimeout(5000, () => this.mtp.getObjectInfo(h));
           if (info.objectFormat === 0x3001) { folderQueue.push(h); continue; }
           if (info.filename) objects.push({ handle: h, filename: info.filename, size: info.compressedSize || 0 });
         } catch (err) {
-          complete = false;
-          await clearPipes();
+          await onError(err);
         }
 
         if (seen.size % 200 === 0) {
@@ -1547,8 +1537,76 @@ class ZuneManager extends EventEmitter {
     }
     // If ZMDB handles aren't valid MTP handles, resolve first
     const realHandle = await this.resolveHandle(handle);
-    const data = await this.mtp.getObject(realHandle);
-    return data;
+    try {
+      return await this._getObjectSafe(realHandle);
+    } catch (err) {
+      // The probe showed atom IDs usually work as handles, but not necessarily
+      // for every track. Locate this one by scanning the device instead.
+      if (this.connected && this.zmdbHandlesValid === true && this._zmdbEntries) {
+        console.log(`ZuneManager: GetObject(0x${realHandle.toString(16)}) failed (${err.message}) — locating file by scan`);
+        if (!this._handleCache) await this._buildHandleCache();
+        const alt = this._handleCache.get(handle);
+        if (alt != null && alt !== realHandle) return await this._getObjectSafe(alt);
+        throw new Error('Could not locate this file on the Zune (try rescan)');
+      }
+      throw err;
+    }
+  }
+
+  /** GetObject that gives up if the device goes quiet, and repairs the session. */
+  async _getObjectSafe(handle) {
+    try {
+      // 16 KB chunks: 20 s without any data means the device has stalled.
+      return await this._withUsbTimeout(20000, () => this.mtp.getObject(handle));
+    } catch (err) {
+      if (this._isStall(err)) {
+        console.log(`ZuneManager: GetObject(0x${handle.toString(16)}) stalled: ${err.message}`);
+        await this._recoverSession();
+        throw new Error('Zune stopped responding on this file');
+      }
+      throw err;
+    }
+  }
+
+  async _withUsbTimeout(ms, fn) {
+    this.transport.setTransferTimeout(ms);
+    try {
+      return await fn();
+    } finally {
+      this.transport.setTransferTimeout(0);
+    }
+  }
+
+  _isStall(err) {
+    return /TIMED_OUT|timeout|STALL|transferIn error|transferOut error|bulk (read|write) failed|Expected RESPONSE/i.test(err?.message || '');
+  }
+
+  /**
+   * After a stalled transfer the device and the app disagree about where the
+   * conversation is. Reopen USB + the MTP session (what replugging used to do).
+   */
+  async _recoverSession() {
+    if (!this.connected) throw new Error('Zune was disconnected');
+    console.log('ZuneManager: device stopped responding — reopening session');
+    this.emit('pull-progress', { phase: 'recovering' });
+    try {
+      await this.transport.close();
+      await new Promise(r => setTimeout(r, 1000));
+      await this.transport.open(ZUNE_VENDOR_ID, this.productId);
+      this.mtp = new MtpProtocol(this.transport);
+      await this.mtp.openSession(1);
+      this.auth = new MtpzAuth(this.mtp);
+      await this.auth.authenticate();
+      const storageIDs = await this.mtp.getStorageIDs();
+      this.storageId = storageIDs[0];
+      console.log('ZuneManager: session recovered');
+    } catch (err) {
+      console.error('ZuneManager: session recovery failed:', err.message);
+      await this.disconnect();
+      this.currentStatus = { state: 'disconnected' };
+      this.emit('status', this.currentStatus);
+      throw new Error('Zune disconnected — unplug it and plug it back in');
+    }
   }
 
   async _tryGetPropString(handle, propCode, timeoutMs = 3000) {
