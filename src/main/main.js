@@ -155,6 +155,9 @@ app.whenReady().then(async () => {
   zuneManager.on('browse-progress', (data) => {
     if (mainWindow) mainWindow.webContents.send('zune-browse-progress', data);
   });
+  zuneManager.on('pull-progress', (data) => {
+    if (mainWindow) mainWindow.webContents.send('zune-pull-progress', data);
+  });
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -758,6 +761,20 @@ ipcMain.handle('now-playing-save', async (event, nowPlaying) => {
   }
 });
 
+// Two different tracks can share "Artist - Title" (album version vs. live,
+// compilations, etc.). Never overwrite: add " (2)", " (3)"... instead.
+async function uniqueDestPath(dir, baseName, ext) {
+  let candidate = path.join(dir, baseName + ext);
+  for (let n = 2; ; n++) {
+    try {
+      await fs.access(candidate);
+    } catch {
+      return candidate;
+    }
+    candidate = path.join(dir, `${baseName} (${n})${ext}`);
+  }
+}
+
 ipcMain.handle('zune-pull-file', async (event, handle, filename, destDir, metadata) => {
   const tempFiles = [];
   try {
@@ -786,8 +803,7 @@ ipcMain.handle('zune-pull-file', async (event, handle, filename, destDir, metada
 
     if (WMA_EXTENSIONS.has(ext)) {
       // Convert WMA → MP3 via ffmpeg
-      const mp3Name = baseName + '.mp3';
-      finalPath = path.join(destDir, mp3Name);
+      finalPath = await uniqueDestPath(destDir, baseName, '.mp3');
 
       const ffArgs = ['-i', tempRaw];
 
@@ -835,10 +851,16 @@ ipcMain.handle('zune-pull-file', async (event, handle, filename, destDir, metada
 
       ffArgs.push('-y', finalPath);
 
-      await execFileAsync(ffmpegPath, ffArgs);
+      try {
+        await execFileAsync(ffmpegPath, ffArgs);
+      } catch (err) {
+        // Don't leave a half-written MP3 behind for the retry to dodge around
+        await fs.unlink(finalPath).catch(() => {});
+        throw err;
+      }
     } else {
       // MP3/AAC — just move to destination (already playable)
-      finalPath = path.join(destDir, baseName + ext);
+      finalPath = await uniqueDestPath(destDir, baseName, ext);
       await fs.rename(tempRaw, finalPath).catch(async () => {
         // rename fails across filesystems, fall back to copy+delete
         await fs.copyFile(tempRaw, finalPath);

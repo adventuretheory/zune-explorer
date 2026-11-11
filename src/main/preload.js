@@ -69,6 +69,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return handler;
   },
   offZuneBrowseProgress: (handler) => ipcRenderer.removeListener('zune-browse-progress', handler),
+  onZunePullProgress: (callback) => {
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on('zune-pull-progress', handler);
+    return handler;
+  },
+  offZunePullProgress: (handler) => ipcRenderer.removeListener('zune-pull-progress', handler),
 
   // Metadata enrichment
   metadataSearch: (album, artist) => ipcRenderer.invoke('metadata-search', album, artist),

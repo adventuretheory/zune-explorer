@@ -11,6 +11,7 @@ const ffmpegPath = require('ffmpeg-static');
 const { UsbTransport, ZUNE_VENDOR_ID, ZUNE_DEVICES } = require('./usb-transport.js');
 const { MtpProtocol } = require('./mtp-protocol.js');
 const { MtpzAuth } = require('./mtpz-auth.js');
+const { HandleIndex } = require('./handle-index.js');
 const { ExtensionToFormat, ObjectFormat, ObjectProperty } = require('./mtp-constants.js');
 const { ZMDBParser } = require('./zmdb-parser.js');
 const { PodcastDeviceSync } = require('./podcast-sync.js');
@@ -136,6 +137,7 @@ class ZuneManager extends EventEmitter {
     }
     this.connected = false;
     this.mtp = null;
+    this._resetHandleResolution();
     this.auth = null;
     this.storageId = null;
     this.deviceInfo = null;
@@ -850,88 +852,110 @@ class ZuneManager extends EventEmitter {
     this.zmdbHandlesValid = false;
     console.log('ZuneManager: ZMDB atom IDs are not valid MTP handles — will resolve on pull');
 
-    // Build a filename→atomId map from ZMDB so we can match at pull time
-    this._zmdbFilenameMap = new Map();
-    for (const track of zmdbResult.music) {
-      if (track.filename) {
-        this._zmdbFilenameMap.set(track.handle, track.filename);
+    // Remember filename + size for each ZMDB entry so we can match at pull time
+    this._zmdbEntries = [];
+    for (const cat of ['music', 'videos', 'pictures']) {
+      for (const item of zmdbResult[cat]) {
+        if (item.filename) {
+          this._zmdbEntries.push({ atomId: item.handle, filename: item.filename, size: item.size || 0 });
+        }
       }
     }
-    for (const video of zmdbResult.videos) {
-      if (video.filename) {
-        this._zmdbFilenameMap.set(video.atomId, video.filename);
+  }
+
+  /** Forget handle-resolution state (new browse, or device unplugged). */
+  _resetHandleResolution() {
+    this.zmdbHandlesValid = undefined;
+    this._zmdbEntries = null;
+    this._handleCache = null;
+    this._handleCacheComplete = false;
+    this._handleCacheRebuilt = false;
+  }
+
+  /**
+   * Walk the device and map every ZMDB atom ID to its real MTP handle.
+   * Sets _handleCacheComplete=false if any folder or object couldn't be read,
+   * so a later miss can trigger one rebuild.
+   */
+  async _buildHandleCache() {
+    console.log('ZuneManager: building handle cache for pull...');
+    const index = new HandleIndex(this._zmdbEntries || []);
+    const objects = [];
+    const folderQueue = [0];
+    const seen = new Set();
+    let complete = true;
+
+    const clearPipes = async () => {
+      try { await this.transport.clearHalt('in'); } catch (_) {}
+      try { await this.transport.clearHalt('out'); } catch (_) {}
+    };
+
+    while (folderQueue.length > 0) {
+      if (!this.connected) throw new Error('Zune was disconnected');
+      const parent = folderQueue.shift();
+      let handles;
+      try {
+        handles = await Promise.race([
+          this.mtp.getObjectHandles(this.storageId, 0, parent),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 10000)),
+        ]);
+      } catch (err) {
+        console.log(`ZuneManager: handle cache — folder ${parent} unreadable: ${err.message}`);
+        complete = false;
+        await clearPipes();
+        continue;
+      }
+
+      for (const h of handles) {
+        if (seen.has(h)) continue;
+        seen.add(h);
+        try {
+          const info = await Promise.race([
+            this.mtp.getObjectInfo(h),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000)),
+          ]);
+          if (info.objectFormat === 0x3001) { folderQueue.push(h); continue; }
+          if (info.filename) objects.push({ handle: h, filename: info.filename, size: info.compressedSize || 0 });
+        } catch (err) {
+          complete = false;
+          await clearPipes();
+        }
+
+        if (seen.size % 200 === 0) {
+          this.emit('pull-progress', { phase: 'resolving', scanned: seen.size, total: index.total });
+        }
       }
     }
-    for (const pic of zmdbResult.pictures) {
-      if (pic.filename) {
-        this._zmdbFilenameMap.set(pic.atomId, pic.filename);
-      }
-    }
+
+    this._handleCache = index.matchAll(objects);
+    this._handleCacheComplete = complete;
+    this.emit('pull-progress', { phase: 'resolved', scanned: seen.size, total: index.total });
+    console.log(`ZuneManager: handle cache built — ${this._handleCache.size}/${index.total} resolved${complete ? '' : ' (some objects unreadable)'}`);
   }
 
   /**
    * Resolve a ZMDB atom ID to a real MTP handle by searching the device.
    * Called lazily at pull time when ZMDB handles aren't valid MTP handles.
+   * Throws if the file can't be found, rather than sending the device a bogus
+   * handle (which can stall the USB session until the Zune is replugged).
    */
   async resolveHandle(atomId) {
     // If ZMDB handles work as MTP handles, no resolution needed
     if (this.zmdbHandlesValid !== false) return atomId;
 
-    // Check cache first
-    if (this._handleCache && this._handleCache.has(atomId)) {
-      return this._handleCache.get(atomId);
+    if (!this._handleCache) await this._buildHandleCache();
+
+    if (!this._handleCache.has(atomId) && !this._handleCacheComplete && !this._handleCacheRebuilt) {
+      // The first scan hit read errors; try once more before giving up.
+      this._handleCacheRebuilt = true;
+      await this._buildHandleCache();
     }
 
-    // Build handle cache on first pull (one-time cost)
-    if (!this._handleCache) {
-      console.log('ZuneManager: building handle cache for pull (first time)...');
-      this._handleCache = new Map();
-
-      // Get all handles from root and scan for filenames
-      const folderQueue = [0];
-      const seen = new Set();
-
-      while (folderQueue.length > 0) {
-        const parent = folderQueue.shift();
-        let handles;
-        try {
-          handles = await Promise.race([
-            this.mtp.getObjectHandles(this.storageId, 0, parent),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000)),
-          ]);
-        } catch (_) { continue; }
-
-        for (const h of handles) {
-          if (seen.has(h)) continue;
-          seen.add(h);
-          try {
-            const info = await Promise.race([
-              this.mtp.getObjectInfo(h),
-              new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 2000)),
-            ]);
-            if (info.objectFormat === 0x3001) { folderQueue.push(h); continue; }
-            if (info.filename) {
-              // Match MTP filename to ZMDB tracks by basename
-              for (const [aId, zmdbFn] of this._zmdbFilenameMap.entries()) {
-                const zmdbBase = zmdbFn.split(/[/\\]/).pop().toLowerCase();
-                if (info.filename.toLowerCase() === zmdbBase) {
-                  this._handleCache.set(aId, h);
-                  break;
-                }
-              }
-            }
-          } catch (_) {}
-
-          if (seen.size % 500 === 0) {
-            this.emit('pull-progress', { phase: 'resolving', resolved: this._handleCache.size, total: this._zmdbFilenameMap.size });
-          }
-        }
-      }
-
-      console.log(`ZuneManager: handle cache built — ${this._handleCache.size} handles resolved`);
+    const handle = this._handleCache.get(atomId);
+    if (handle == null) {
+      throw new Error('Could not locate this file on the Zune (try rescan)');
     }
-
-    return this._handleCache.get(atomId) || atomId;
+    return handle;
   }
 
   async browseContents() {
@@ -942,6 +966,7 @@ class ZuneManager extends EventEmitter {
     const browseStart = Date.now();
     const elapsed = () => `${((Date.now() - browseStart) / 1000).toFixed(1)}s`;
     console.log(`ZuneManager: browseContents() starting`);
+    this._resetHandleResolution();
 
     // Try ZMDB fast path first
     this.emit('browse-progress', { phase: 'scanning', scanned: 0, total: 0, foldersScanned: 0, contents: { music: [], videos: [], pictures: [], podcasts: [] } });

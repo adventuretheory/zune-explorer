@@ -1204,82 +1204,63 @@ class ZuneSyncPanel {
         const localOnly = [];
         const deviceOnly = [];
 
-        // Build lookup maps
-        const localByFilename = new Map();
-        for (const [filePath, track] of localTracks) {
-            const basename = filePath.split(/[/\\]/).pop().toLowerCase();
-            localByFilename.set(basename, { ...track, path: filePath });
-        }
+        // Several tracks can share a filename ("01 Intro.mp3") or a title+artist
+        // (album vs. compilation copy), so pair them up one-to-one instead of
+        // letting a Map keep only the last one — otherwise copied songs keep
+        // showing up as "missing from computer".
+        const groupBy = (items, keyOf) => {
+            const groups = new Map();
+            for (const item of items) {
+                const key = keyOf(item);
+                if (!key) continue;
+                if (!groups.has(key)) groups.set(key, []);
+                groups.get(key).push(item);
+            }
+            return groups;
+        };
+        const metaKey = (t) => {
+            const key = `${(t.title || '').toLowerCase()}|||${(t.artist || '').toLowerCase()}`;
+            return key === '|||' ? null : key;
+        };
+        const matchedDeviceHandles = new Set();
 
-        const deviceByFilename = new Map();
-        for (const item of deviceTracks) {
-            const fn = (item.filename || '').toLowerCase();
-            deviceByFilename.set(fn, item);
+        const pairUp = (localList, deviceList, keyOf) => {
+            const deviceGroups = groupBy(deviceList, keyOf);
+            const unmatched = [];
+            for (const localTrack of localList) {
+                const group = deviceGroups.get(keyOf(localTrack));
+                if (group && group.length > 0) {
+                    const device = group.shift();
+                    matched.push({ local: localTrack, device });
+                    matchedDeviceHandles.add(device.handle);
+                } else {
+                    unmatched.push(localTrack);
+                }
+            }
+            return unmatched;
+        };
+
+        const allLocal = [];
+        for (const [filePath, track] of localTracks) {
+            allLocal.push({ ...track, path: filePath, _basename: filePath.split(/[/\\]/).pop().toLowerCase() });
         }
 
         // Pass 1: Filename match
-        const matchedLocalPaths = new Set();
-        const matchedDeviceFilenames = new Set();
-
-        for (const [fn, localTrack] of localByFilename) {
-            if (deviceByFilename.has(fn)) {
-                matched.push({ local: localTrack, device: deviceByFilename.get(fn) });
-                matchedLocalPaths.add(localTrack.path);
-                matchedDeviceFilenames.add(fn);
-            }
-        }
+        const unmatchedLocal = pairUp(allLocal, deviceTracks, (t) =>
+            t._basename !== undefined ? t._basename : ((t.filename || '').toLowerCase() || null));
 
         // Pass 2: Title+Artist match (unmatched only)
-        const unmatchedLocal = [];
-        for (const [filePath, track] of localTracks) {
-            if (!matchedLocalPaths.has(filePath)) {
-                unmatchedLocal.push({ ...track, path: filePath });
-            }
-        }
+        const unmatchedDevice = deviceTracks.filter(d => !matchedDeviceHandles.has(d.handle));
+        const stillLocal = pairUp(unmatchedLocal, unmatchedDevice, metaKey);
 
-        const unmatchedDevice = [];
-        for (const item of deviceTracks) {
-            const fn = (item.filename || '').toLowerCase();
-            if (!matchedDeviceFilenames.has(fn)) {
-                unmatchedDevice.push(item);
-            }
+        for (const track of stillLocal) {
+            delete track._basename;
+            localOnly.push(track);
         }
-
-        const localByMeta = new Map();
-        for (const track of unmatchedLocal) {
-            const key = `${(track.title || '').toLowerCase()}|||${(track.artist || '').toLowerCase()}`;
-            if (key !== '|||') localByMeta.set(key, track);
-        }
-
-        const deviceByMeta = new Map();
         for (const item of unmatchedDevice) {
-            const key = `${(item.title || '').toLowerCase()}|||${(item.artist || '').toLowerCase()}`;
-            if (key !== '|||') deviceByMeta.set(key, item);
+            if (!matchedDeviceHandles.has(item.handle)) deviceOnly.push(item);
         }
-
-        const metaMatchedLocalPaths = new Set();
-        const metaMatchedDeviceHandles = new Set();
-
-        for (const [key, localTrack] of localByMeta) {
-            if (deviceByMeta.has(key)) {
-                matched.push({ local: localTrack, device: deviceByMeta.get(key) });
-                metaMatchedLocalPaths.add(localTrack.path);
-                metaMatchedDeviceHandles.add(deviceByMeta.get(key).handle);
-            }
-        }
-
-        // Collect remaining unmatched
-        for (const track of unmatchedLocal) {
-            if (!metaMatchedLocalPaths.has(track.path)) {
-                localOnly.push(track);
-            }
-        }
-
-        for (const item of unmatchedDevice) {
-            if (!metaMatchedDeviceHandles.has(item.handle)) {
-                deviceOnly.push(item);
-            }
-        }
+        for (const m of matched) delete m.local._basename;
 
         this.diffResult = { matched, localOnly, deviceOnly };
     }
@@ -2055,13 +2036,27 @@ class ZuneSyncPanel {
         const failedFiles = [];
         const category = this.diffCategory;
         const deviceItems = (this.browseData && this.browseData[category]) || [];
+        const deviceByHandle = new Map(deviceItems.map(i => [i.handle, i]));
+        const failedHandles = [];
+        let disconnected = false;
 
+        // The first copy may need to scan the whole Zune to locate files.
+        // Show that, so a long scan doesn't look like a freeze.
+        pullBtn.textContent = 'preparing to copy\u2026';
+        const pullProgressHandler = window.electronAPI.onZunePullProgress?.((p) => {
+            if (p.phase === 'resolving') {
+                pullBtn.textContent = 'scanning zune for files \u2014 ' + p.scanned + ' checked';
+            }
+        });
+
+        try {
         for (let batchStart = 0; batchStart < handles.length; batchStart += BATCH_SIZE) {
             const batchEnd = Math.min(batchStart + BATCH_SIZE, handles.length);
 
             for (let hi = batchStart; hi < batchEnd; hi++) {
                 const handle = handles[hi];
-                const deviceItem = deviceItems.find(i => i.handle === handle);
+                if (disconnected) { failedHandles.push(handle); continue; }
+                const deviceItem = deviceByHandle.get(handle);
                 if (!deviceItem) continue;
 
                 const filename = deviceItem.filename || ('file_' + handle);
@@ -2088,6 +2083,10 @@ class ZuneSyncPanel {
                         }
                     } catch (err) {
                         console.log('Pull ' + filename + ' attempt ' + attempt + '/' + MAX_RETRIES + ' failed: ' + err.message);
+                        // Retrying can't help once the device is gone, or when it
+                        // simply doesn't have the file.
+                        if (/disconnected|No Zune device connected/i.test(err.message)) { disconnected = true; break; }
+                        if (/Could not locate/i.test(err.message)) break;
                         if (attempt < MAX_RETRIES) {
                             await new Promise(r => setTimeout(r, 500));
                         }
@@ -2097,6 +2096,7 @@ class ZuneSyncPanel {
                 if (!fileSuccess) {
                     failedCount++;
                     failedFiles.push(filename);
+                    failedHandles.push(handle);
                 }
 
                 pullBtn.textContent = 'copying ' + (pulled + failedCount) + ' of ' + handles.length + ' \u2014 ' + filename;
@@ -2105,13 +2105,18 @@ class ZuneSyncPanel {
             // Yield between batches
             await new Promise(r => setTimeout(r, 0));
         }
+        } finally {
+            if (pullProgressHandler) window.electronAPI.offZunePullProgress(pullProgressHandler);
+        }
+
+        // Keep anything that didn't copy selected, so "copy" can simply be pressed again
+        for (const h of failedHandles) this.diffSelectedHandles.add(h);
+        if (disconnected) failedCount = failedHandles.length;
 
         if (failedCount > 0) {
-            pullBtn.textContent = pulled + ' copied, ' + failedCount + ' failed';
+            pullBtn.textContent = pulled + ' copied, ' + failedCount + (disconnected ? ' not copied (zune disconnected)' : ' failed');
             pullBtn.style.color = '#ff6900';
-            if (typeof showToast === 'function') {
-                showToast(failedCount + ' file(s) failed to copy: ' + failedFiles.slice(0, 3).join(', ') + (failedCount > 3 ? '...' : ''));
-            }
+            this.explorer.showToast?.(failedCount + ' file(s) not copied: ' + failedFiles.slice(0, 3).join(', ') + (failedFiles.length > 3 ? '\u2026' : '') + ' \u2014 they are still selected, press copy to retry');
         } else {
             pullBtn.textContent = pulled + ' files copied';
             pullBtn.style.color = '';
