@@ -2097,14 +2097,20 @@ class ZuneSyncPanel {
                 ? `copy ${this.diffSelectedHandles.size} to computer`
                 : `select ${noun} to copy`;
             pullBtn.disabled = this.diffSelectedHandles.size === 0;
-            deleteBtn.textContent = this.diffSelectedHandles.size > 0
-                ? `delete ${this.diffSelectedHandles.size} from device`
-                : `select ${noun} to delete`;
-            deleteBtn.disabled = this.diffSelectedHandles.size === 0;
-            deleteBtn.classList.remove('confirm');
-            if (this.diffDeleteConfirmTimer) {
-                clearTimeout(this.diffDeleteConfirmTimer);
-                this.diffDeleteConfirmTimer = null;
+            // A pending "confirm: delete N?" survives list redraws (e.g. while the
+            // library is still being read) as long as the selection is the same.
+            const pending = this.diffDeleteConfirmTimer && deleteBtn.classList.contains('confirm') &&
+                this._deleteConfirmCount === this.diffSelectedHandles.size;
+            if (!pending) {
+                deleteBtn.textContent = this.diffSelectedHandles.size > 0
+                    ? `delete ${this.diffSelectedHandles.size} from device`
+                    : `select ${noun} to delete`;
+                deleteBtn.disabled = this.diffSelectedHandles.size === 0;
+                deleteBtn.classList.remove('confirm');
+                if (this.diffDeleteConfirmTimer) {
+                    clearTimeout(this.diffDeleteConfirmTimer);
+                    this.diffDeleteConfirmTimer = null;
+                }
             }
         }
     }
@@ -2472,6 +2478,7 @@ class ZuneSyncPanel {
         // Confirm-on-second-click pattern
         if (!deleteBtn.classList.contains('confirm')) {
             deleteBtn.classList.add('confirm');
+            this._deleteConfirmCount = count;
             deleteBtn.textContent = `confirm: delete ${count} file${count !== 1 ? 's' : ''}?`;
 
             if (this.diffDeleteConfirmTimer) clearTimeout(this.diffDeleteConfirmTimer);
