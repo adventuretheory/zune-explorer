@@ -190,6 +190,26 @@ class UsbTransport {
     }
   }
 
+  /**
+   * Throw away anything the device still has queued for us (replies to
+   * requests we gave up on). Returns the number of bytes discarded.
+   */
+  async drainIn(maxReads = 64) {
+    let drained = 0;
+    this.setTransferTimeout(150);
+    try {
+      for (let i = 0; i < maxReads; i++) {
+        const buf = await this.bulkRead(16384);
+        drained += buf.length;
+      }
+    } catch (_) {
+      // Timed out: nothing left to read
+    } finally {
+      this.setTransferTimeout(0);
+    }
+    return drained;
+  }
+
   async clearHalt(direction) {
     try {
       const epNum = direction === 'in' ? this.bulkInEndpoint : this.bulkOutEndpoint;
