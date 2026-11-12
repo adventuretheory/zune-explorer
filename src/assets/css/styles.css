@@ -4390,3 +4390,4 @@ body.platform-linux .now-playing-panel {
   transition: color 0.15s, border-color 0.15s;
 }
 .song-play-btn:hover { color: #fff; border-color: var(--zune-orange); }
+.song-play-btn.playing { color: #fff; border-color: var(--zune-orange); background: rgba(255, 105, 0, 0.15); }

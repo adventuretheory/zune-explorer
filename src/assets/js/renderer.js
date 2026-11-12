@@ -1820,6 +1820,11 @@ class ZuneSyncPanel {
                             play.title = 'play';
                             play.textContent = '\u25B6';
                             play.dataset.path = localPath;
+                            if (panel.explorer.isPathPlaying(localPath)) {
+                                play.textContent = '\u23F8';
+                                play.title = 'pause';
+                                play.classList.add('playing');
+                            }
                             el.appendChild(play);
                         }
 
@@ -2906,6 +2911,10 @@ class ZuneExplorer {
             this.saveNowPlaying();
         });
         this.audioPlayer.on('play', () => this.onPlayStateChange(true));
+        // Keep every ▶/⏸ row button (fixer, duplicates, Zune lists) in step
+        for (const evt of ['play', 'pause', 'trackchange', 'queueend', 'playbackerror']) {
+            this.audioPlayer.on(evt, () => this.refreshRowPlayButtons());
+        }
         this.audioPlayer.on('pause', () => this.onPlayStateChange(false));
         this.audioPlayer.on('timeupdate', (data) => this.onTimeUpdate(data));
         this.audioPlayer.on('shufflechange', (active) => {
@@ -3893,6 +3902,12 @@ class ZuneExplorer {
      * duplicates, Zune lists), using what the library knows about it.
      */
     async playPath(filePath) {
+        // Clicking the song that's already loaded pauses / resumes it
+        const current = this.audioPlayer.getCurrentFile();
+        if (current && current.path === filePath && this.audioPlayer.audio.src) {
+            this.audioPlayer.togglePlayPause();
+            return;
+        }
         const t = this.musicLibrary.tracks.get(filePath) || {};
         const file = {
             path: filePath,
@@ -3900,6 +3915,21 @@ class ZuneExplorer {
             title: t.title, artist: t.artist, album: t.album, duration: t.duration,
         };
         await this.playWithNowPlaying(file, [file]);
+    }
+
+    isPathPlaying(filePath) {
+        const current = this.audioPlayer.getCurrentFile();
+        return !!(this.audioPlayer.isPlaying && current && current.path === filePath);
+    }
+
+    /** Show ⏸ on the row button of the song that's playing, ▶ on the rest. */
+    refreshRowPlayButtons() {
+        for (const b of document.querySelectorAll('.song-play-btn[data-path]')) {
+            const playing = this.isPathPlaying(b.dataset.path);
+            b.textContent = playing ? '\u23F8' : '\u25B6';
+            b.title = playing ? 'pause' : 'play';
+            b.classList.toggle('playing', playing);
+        }
     }
 
     async playWithNowPlaying(file, queue) {

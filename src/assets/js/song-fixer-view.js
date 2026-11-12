@@ -363,8 +363,10 @@ class SongFixerView {
 
   /** A ▶ button that plays a song file without leaving this page. */
   _playButton(filePath) {
-    const b = this._el('button', 'song-play-btn', '\u25B6');
-    b.title = 'play';
+    const playing = !!this.explorer.isPathPlaying?.(filePath);
+    const b = this._el('button', 'song-play-btn' + (playing ? ' playing' : ''), playing ? '\u23F8' : '\u25B6');
+    b.title = playing ? 'pause' : 'play';
+    b.dataset.path = filePath;
     b.addEventListener('click', (e) => {
       // Rows are labels; don't let the click tick the checkbox
       e.preventDefault();
