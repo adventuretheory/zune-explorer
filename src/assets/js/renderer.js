@@ -1812,6 +1812,17 @@ class ZuneSyncPanel {
                             el.appendChild(checkbox);
                         }
 
+                        // Songs on this computer can be played right from the list
+                        var localPath = panel.diffTab === 'matched' ? (item.local && item.local.path) : (panel.diffTab === 'local-only' ? item.path : null);
+                        if (localPath && panel.diffCategory === 'music') {
+                            var play = document.createElement('button');
+                            play.className = 'song-play-btn zune-diff-play';
+                            play.title = 'play';
+                            play.textContent = '\u25B6';
+                            play.dataset.path = localPath;
+                            el.appendChild(play);
+                        }
+
                         // Album art
                         var art = panel.diffTab === 'matched'
                             ? ((item.local ? panel.explorer.getAlbumArt(item.local) : null) || (item.device ? panel._getBrowseArt(item.device) : null))
@@ -1862,16 +1873,6 @@ class ZuneSyncPanel {
                         if (metaSpan.textContent) infoDiv.appendChild(metaSpan);
                         el.appendChild(infoDiv);
 
-                        // Songs on this computer can be played right from the list
-                        var localPath = panel.diffTab === 'matched' ? (item.local && item.local.path) : (panel.diffTab === 'local-only' ? item.path : null);
-                        if (localPath && panel.diffCategory === 'music') {
-                            var play = document.createElement('button');
-                            play.className = 'song-play-btn zune-diff-play';
-                            play.title = 'play';
-                            play.textContent = '\u25B6';
-                            play.dataset.path = localPath;
-                            el.appendChild(play);
-                        }
                     }
                 },
                 overscan: 15,

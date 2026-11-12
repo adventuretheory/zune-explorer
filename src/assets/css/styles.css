@@ -4383,9 +4383,9 @@ body.platform-linux .now-playing-panel {
 
 /* ▶ play button on song rows outside the music view */
 .song-play-btn {
-  flex-shrink: 0; align-self: center; margin-left: auto;
-  width: 30px; height: 30px; border-radius: 50%;
-  border: 1px solid #333; background: transparent; color: var(--zune-text-dim);
+  flex-shrink: 0; align-self: center; margin: 0 4px 0 2px;
+  width: 28px; height: 28px; border-radius: 50%;
+  border: 1px solid #555; background: transparent; color: #bbb;
   font-size: 11px; line-height: 1; padding: 0 0 0 2px; cursor: pointer;
   transition: color 0.15s, border-color 0.15s;
 }

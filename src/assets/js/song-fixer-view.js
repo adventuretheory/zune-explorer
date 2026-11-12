@@ -286,8 +286,8 @@ class SongFixerView {
     const meta = `${t.artist || '?'} — ${t.album || '?'}` + (item.reasons.length ? `  ·  ${item.reasons.join(', ')}` : '');
     info.appendChild(this._el('div', 'zune-diff-meta', meta));
     info.appendChild(this._resultLine(item));
-    row.appendChild(info);
     row.appendChild(this._playButton(item.path));
+    row.appendChild(info);
     return row;
   }
 
@@ -501,8 +501,8 @@ class SongFixerView {
           why.appendChild(document.createTextNode(it.bad.join(', ')));
         }
         info.appendChild(why);
-        row.appendChild(info);
         if (!onZune) row.appendChild(this._playButton(it.id));
+        row.appendChild(info);
         list.appendChild(row);
       }
     }
