@@ -783,9 +783,41 @@ async function uniqueDestPath(dir, baseName, ext) {
   }
 }
 
+// The name a copied file gets: "Artist - Title" when tags are known.
+function pullBaseName(filename, metadata) {
+  const ext = path.extname(filename).toLowerCase();
+  let baseName = path.basename(filename, ext);
+  if (metadata?.title) {
+    baseName = metadata.title.replace(/[<>:"/\\|?*]/g, '_');
+    if (metadata?.artist) baseName = `${metadata.artist.replace(/[<>:"/\\|?*]/g, '_')} - ${baseName}`;
+  }
+  return baseName;
+}
+
+// Was this song already copied here on an earlier run? Same name and the same
+// length (within 2 s) — then don't copy it again as "Song (2).mp3".
+async function findEarlierCopy(destDir, filename, metadata) {
+  const durationMs = Number(metadata?.duration) || 0;
+  if (!durationMs) return null;
+  let ext = path.extname(filename).toLowerCase() || '.mp3';
+  if (WMA_EXTENSIONS.has(ext)) ext = '.mp3';
+  const candidate = path.join(destDir, pullBaseName(filename, metadata) + ext);
+  try {
+    const stats = await fs.stat(candidate);
+    const { parseFile } = await import('music-metadata');
+    const md = await parseFile(candidate, { duration: true });
+    const secs = md.format.duration || 0;
+    if (secs && Math.abs(secs - durationMs / 1000) <= 2) return { path: candidate, size: stats.size };
+  } catch { /* not there, or unreadable */ }
+  return null;
+}
+
 ipcMain.handle('zune-pull-file', async (event, handle, filename, destDir, metadata) => {
   const tempFiles = [];
   try {
+    const earlier = await findEarlierCopy(destDir, filename, metadata);
+    if (earlier) return { success: true, path: earlier.path, size: earlier.size, alreadyCopied: true };
+
     const data = await zuneManager.getFile(handle);
     if (!data || data.length === 0) {
       console.error(`zune-pull-file: handle ${handle} returned empty data (0 bytes)`);
@@ -797,10 +829,7 @@ ipcMain.handle('zune-pull-file', async (event, handle, filename, destDir, metada
     if (!ext) ext = '.mp3';
 
     // Use title as filename if available (ZMDB filenames can be cryptic)
-    if (metadata?.title) {
-      baseName = metadata.title.replace(/[<>:"/\\|?*]/g, '_');
-      if (metadata?.artist) baseName = `${metadata.artist.replace(/[<>:"/\\|?*]/g, '_')} - ${baseName}`;
-    }
+    baseName = pullBaseName(filename, metadata);
 
     // Save raw file to temp location first
     const tempRaw = path.join(os.tmpdir(), `zune-pull-${Date.now()}-${baseName}${ext}`);

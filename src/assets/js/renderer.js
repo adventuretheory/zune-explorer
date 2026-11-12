@@ -2219,6 +2219,7 @@ class ZuneSyncPanel {
         const BATCH_SIZE = 8;
         const MAX_RETRIES = 3;
         let pulled = 0;
+        let alreadyCopied = 0;
         let failedCount = 0;
         const pulledFiles = [];
         const failedFiles = [];
@@ -2257,6 +2258,7 @@ class ZuneSyncPanel {
                     album: deviceItem.album || null,
                     genre: deviceItem.genre || null,
                     trackNumber: deviceItem.trackNumber || null,
+                    duration: deviceItem.duration || null, // ms; lets an earlier copy be recognised
                     albumArt: this._getBrowseArt(deviceItem),
                 } : {};
 
@@ -2266,7 +2268,11 @@ class ZuneSyncPanel {
                         const result = await window.electronAPI.zunePullFile(handle, filename, destDir, metadata);
                         if (result.success) {
                             pulled++;
-                            pulledFiles.push({ path: result.path, size: result.size || 0 });
+                            if (result.alreadyCopied) alreadyCopied++;
+                            // Earlier copies may have dropped out of the library; bring them back
+                            if (!result.alreadyCopied || !this.explorer.musicLibrary.tracks.has(result.path)) {
+                                pulledFiles.push({ path: result.path, size: result.size || 0 });
+                            }
                             this._rememberPulled(handle, result.path);
                             fileSuccess = true;
                             break;
@@ -2317,14 +2323,17 @@ class ZuneSyncPanel {
             pullBtn.style.color = '#ff6900';
             this.explorer.showToast?.(failedCount + ' file(s) not copied: ' + failedFiles.slice(0, 3).join(', ') + (failedFiles.length > 3 ? '\u2026' : '') + ' \u2014 they are still selected, press copy to retry');
         } else {
-            pullBtn.textContent = pulled + ' files copied';
+            pullBtn.textContent = (pulled - alreadyCopied) + ' files copied' +
+                (alreadyCopied ? ' (' + alreadyCopied + ' were already on your computer)' : '');
             pullBtn.style.color = '';
         }
         pullBtn.disabled = false;
 
         // Keep the existing post-pull logic for adding to local files and triggering scan
         if (pulledFiles.length > 0) {
+            const known = new Set(this.explorer.categorizedFiles[category].map(f => f.path));
             for (const pf of pulledFiles) {
+                if (known.has(pf.path)) continue;
                 const ext = pf.path.split('.').pop().toLowerCase();
                 this.explorer.categorizedFiles[category].push({
                     path: pf.path,
