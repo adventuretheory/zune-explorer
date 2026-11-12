@@ -287,6 +287,7 @@ class SongFixerView {
     info.appendChild(this._el('div', 'zune-diff-meta', meta));
     info.appendChild(this._resultLine(item));
     row.appendChild(info);
+    row.appendChild(this._playButton(item.path));
     return row;
   }
 
@@ -358,6 +359,19 @@ class SongFixerView {
     const fresh = this._row(item);
     old.replaceWith(fresh);
     this.rowEls.set(item.path, fresh);
+  }
+
+  /** A ▶ button that plays a song file without leaving this page. */
+  _playButton(filePath) {
+    const b = this._el('button', 'song-play-btn', '\u25B6');
+    b.title = 'play';
+    b.addEventListener('click', (e) => {
+      // Rows are labels; don't let the click tick the checkbox
+      e.preventDefault();
+      e.stopPropagation();
+      this.explorer.playPath?.(filePath);
+    });
+    return b;
   }
 
   /** Two-click button: the first click asks, the second within 4s acts. */
@@ -486,6 +500,7 @@ class SongFixerView {
         }
         info.appendChild(why);
         row.appendChild(info);
+        if (!onZune) row.appendChild(this._playButton(it.id));
         list.appendChild(row);
       }
     }

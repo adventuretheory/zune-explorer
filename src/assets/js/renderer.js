@@ -1861,6 +1861,17 @@ class ZuneSyncPanel {
                         }
                         if (metaSpan.textContent) infoDiv.appendChild(metaSpan);
                         el.appendChild(infoDiv);
+
+                        // Songs on this computer can be played right from the list
+                        var localPath = panel.diffTab === 'matched' ? (item.local && item.local.path) : (panel.diffTab === 'local-only' ? item.path : null);
+                        if (localPath && panel.diffCategory === 'music') {
+                            var play = document.createElement('button');
+                            play.className = 'song-play-btn zune-diff-play';
+                            play.title = 'play';
+                            play.textContent = '\u25B6';
+                            play.dataset.path = localPath;
+                            el.appendChild(play);
+                        }
                     }
                 },
                 overscan: 15,
@@ -1907,6 +1918,13 @@ class ZuneSyncPanel {
 
             // Event delegation: header click to collapse/expand
             this._diffClickHandler = function(e) {
+                var playBtn = e.target.closest('.zune-diff-play');
+                if (playBtn) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    panel.explorer.playPath(playBtn.dataset.path);
+                    return;
+                }
                 if (e.target.closest('input')) return;
                 var row = e.target.closest('.zune-diff-group-header.vs-row');
                 if (!row) return;
@@ -3860,6 +3878,20 @@ class ZuneExplorer {
             album: f.album || (libTrack && libTrack.album) || '',
             duration: f.duration || (libTrack && libTrack.duration) || 0,
         };
+    }
+
+    /**
+     * Play one song by its path from anywhere in the app (song fixer,
+     * duplicates, Zune lists), using what the library knows about it.
+     */
+    async playPath(filePath) {
+        const t = this.musicLibrary.tracks.get(filePath) || {};
+        const file = {
+            path: filePath,
+            name: filePath.split(/[/\\]/).pop(),
+            title: t.title, artist: t.artist, album: t.album, duration: t.duration,
+        };
+        await this.playWithNowPlaying(file, [file]);
     }
 
     async playWithNowPlaying(file, queue) {
