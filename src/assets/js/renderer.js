@@ -1265,13 +1265,57 @@ class ZuneSyncPanel {
             allLocal.push({ ...track, path: filePath, _basename: filePath.split(/[/\\]/).pop().toLowerCase() });
         }
 
+        // Pass 0: songs this app copied off the Zune (remembered at copy time)
+        const pulled = this._pulledMap();
+        const localByPath = new Map(allLocal.map(t => [t.path, t]));
+        const pairedLocal = new Set();
+        for (const d of deviceTracks) {
+            const p = pulled[d.handle];
+            const local = p && localByPath.get(p);
+            if (local && !pairedLocal.has(local)) {
+                matched.push({ local, device: d });
+                matchedDeviceHandles.add(d.handle);
+                pairedLocal.add(local);
+            }
+        }
+        const remainingLocal = allLocal.filter(t => !pairedLocal.has(t));
+        const remainingDevice = () => deviceTracks.filter(d => !matchedDeviceHandles.has(d.handle));
+
         // Pass 1: Filename match
-        const unmatchedLocal = pairUp(allLocal, deviceTracks, (t) =>
+        const unmatchedLocal = pairUp(remainingLocal, remainingDevice(), (t) =>
             t._basename !== undefined ? t._basename : ((t.filename || '').toLowerCase() || null));
 
         // Pass 2: Title+Artist match (unmatched only)
-        const unmatchedDevice = deviceTracks.filter(d => !matchedDeviceHandles.has(d.handle));
-        const stillLocal = pairUp(unmatchedLocal, unmatchedDevice, metaKey);
+        let stillLocal = pairUp(unmatchedLocal, remainingDevice(), metaKey);
+
+        // Pass 3: the name a copy gets ("Artist - Title.mp3"), for copies made
+        // before the app remembered them
+        const safe = (s) => String(s || '').replace(/[<>:"/\\|?*]/g, '_').toLowerCase();
+        stillLocal = pairUp(stillLocal, remainingDevice(), (t) => {
+            if (t._basename !== undefined) return t._basename.replace(/( \(\d+\))?\.[^.]+$/, '');
+            if (!t.title) return null;
+            return t.artist ? `${safe(t.artist)} - ${safe(t.title)}` : safe(t.title);
+        });
+
+        // Pass 4: same title and length when one side has no real artist
+        // ("Unknown Artist" on the computer vs. an ID code on the Zune)
+        const junkArtist = (a) => !a || /^\{?[0-9a-f]{8}-[0-9a-f]{4}-/i.test(a) || window.artistName?.isPlaceholderArtist?.(a);
+        const secs = (d) => (d > 36000 ? d / 1000 : d) || 0; // Zune durations are milliseconds
+        const normTitle = (s) => String(s || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+        const unmatchedDevice = remainingDevice();
+        const byTitle = groupBy(unmatchedDevice, d => normTitle(d.title) || null);
+        stillLocal = stillLocal.filter(t => {
+            const group = byTitle.get(normTitle(t.title));
+            if (!group || !t.duration) return true;
+            const i = group.findIndex(d =>
+                Math.abs(secs(d.duration) - t.duration) <= 2 &&
+                (junkArtist(t.artist) || junkArtist(d.artist) || metaKey(t) === metaKey(d)));
+            if (i === -1) return true;
+            const [d] = group.splice(i, 1);
+            matched.push({ local: t, device: d });
+            matchedDeviceHandles.add(d.handle);
+            return false;
+        });
 
         for (const track of stillLocal) {
             delete track._basename;
@@ -2131,6 +2175,24 @@ class ZuneSyncPanel {
         }
     }
 
+    // Which local file each Zune song was copied to, so the copy counts as
+    // "on both" even when the Zune's tags are junk. Kept per device.
+    _pulledMap() {
+        if (this._pulledCache && this._pulledCacheKey === this.deviceKey) return this._pulledCache;
+        let map = {};
+        try { map = JSON.parse(localStorage.getItem('zune-pulled:' + (this.deviceKey || '')) || '{}'); } catch { map = {}; }
+        this._pulledCache = map;
+        this._pulledCacheKey = this.deviceKey;
+        return map;
+    }
+
+    _rememberPulled(handle, filePath) {
+        if (!handle || !filePath) return;
+        const map = this._pulledMap();
+        map[handle] = filePath;
+        try { localStorage.setItem('zune-pulled:' + (this.deviceKey || ''), JSON.stringify(map)); } catch { /* best-effort */ }
+    }
+
     // ---- Pull (copy to computer) ----
     async _pullFromDevice() {
         if (this.diffCategory === 'podcasts') return this._pullPodcastsFromDevice();
@@ -2138,6 +2200,14 @@ class ZuneSyncPanel {
 
         const destResult = await window.electronAPI.pickPullDestination();
         if (!destResult.success) return;
+
+        // Copies outside the music folders would vanish from the library on the
+        // next start and show up as "missing" again, so add the folder.
+        const musicFolders = this.explorer.preferences?.library?.music || [];
+        if (window.pathUtils && !window.pathUtils.isUnderAnyPrefix(destResult.path, musicFolders)) {
+            await window.electronAPI.preferencesUpdate({ library: { music: [...musicFolders, destResult.path] } });
+            this.explorer.showToast?.('added ' + destResult.path.split(/[/\\]/).pop() + ' to your music folders so the copies stay in your library');
+        }
 
         const handles = Array.from(this.diffSelectedHandles);
         this.diffSelectedHandles.clear();
@@ -2197,6 +2267,7 @@ class ZuneSyncPanel {
                         if (result.success) {
                             pulled++;
                             pulledFiles.push({ path: result.path, size: result.size || 0 });
+                            this._rememberPulled(handle, result.path);
                             fileSuccess = true;
                             break;
                         } else {
