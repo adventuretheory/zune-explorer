@@ -11,6 +11,7 @@ class SongFixerView {
     this.items = null;          // [{ path, track, reasons, state, result, albumIdx, selected, error }]
     this.mode = 'fix';          // 'fix' | 'all' | 'dupes' | 'zune-dupes'
     this.dupeChoice = new Map(); // duplicate id -> ticked for deletion (default: all but the keeper)
+    this.dupeKind = 'identical'; // which duplicate groups to show: 'identical' | 'different'
     this.filter = '';
     this.limit = PAGE_SIZE;
     this.running = false;
@@ -378,7 +379,8 @@ class SongFixerView {
     const out = [];
     for (const [p, t] of this.explorer.musicLibrary.tracks) {
       out.push({
-        id: p, title: t.title, artist: t.artist, album: t.album,
+        id: p, title: t.title, artist: t.artist, album: t.album, albumArtist: t.albumArtist,
+        trackNumber: t.trackNumber || 0, year: t.year || 0,
         duration: t.duration || 0, size: sizes.get(p) || 0, hasArt: !!(t.albumArtKey || t.albumArt),
         where: p, format: (p.split('.').pop() || '').toLowerCase(),
       });
@@ -390,7 +392,7 @@ class SongFixerView {
     const zp = this.explorer.zunePanel;
     const music = zp?.browseData?.music || [];
     return music.filter(d => d.handle).map(d => ({
-      id: d.handle, title: d.title, artist: d.artist, album: d.album,
+      id: d.handle, title: d.title, artist: d.artist, album: d.album, trackNumber: d.trackNumber || 0,
       // Zune durations are in milliseconds
       duration: d.duration > 0 ? d.duration / 1000 : 0, size: d.size || 0,
       hasArt: !!(d.albumArt || d.albumArtKey), where: d.filename || '', format: (String(d.filename || '').split('.').pop() || '').toLowerCase(),
@@ -406,20 +408,36 @@ class SongFixerView {
       return;
     }
 
-    const groups = window.songFixerLogic.findDuplicateGroups(onZune ? this._zuneDuplicateItems() : this._localDuplicateItems());
+    const all = window.songFixerLogic.findDuplicateGroups(onZune ? this._zuneDuplicateItems() : this._localDuplicateItems());
+    if (!all.length) {
+      c.appendChild(this._el('div', 'song-fixer-note', onZune ? 'no duplicate songs on the zune.' : 'no duplicate songs in your library.'));
+      this.statusEl = this._el('div', 'song-fixer-status', this.status);
+      c.appendChild(this.statusEl);
+      return;
+    }
+    const identical = all.filter(g => g.kind === 'identical');
+    const different = all.filter(g => g.kind === 'different');
+    const groups = this.dupeKind === 'identical' ? identical : different;
     const isTicked = (g, it) => this.dupeChoice.has(it.id) ? this.dupeChoice.get(it.id) : it.id !== g.keepId;
     const ticked = [];
     for (const g of groups) for (const it of g.items) if (isTicked(g, it)) ticked.push(it);
-    const extra = groups.reduce((n, g) => n + g.items.length - 1, 0);
+    const extra = (list) => list.reduce((n, g) => n + g.items.length - 1, 0);
 
-    const summary = this._el('div', 'song-fixer-note',
-      groups.length
-        ? `${groups.length} song${groups.length === 1 ? ' is' : 's are'} ${onZune ? 'on the zune' : 'in your library'} more than once (${extra} extra cop${extra === 1 ? 'y' : 'ies'}). ` +
-          'the copy to keep is suggested (best album info, then biggest file) and the rest are ticked \u2014 change any you like.'
-        : (onZune ? 'no duplicate songs on the zune.' : 'no duplicate songs in your library.'));
-    c.appendChild(summary);
-    this.statusEl = this._el('div', 'song-fixer-status', this.status);
-    if (!groups.length) { c.appendChild(this.statusEl); return; }
+    // Identical copies vs different versions
+    const kinds = this._el('div', 'zune-diff-group-bar');
+    for (const [kind, label, list] of [
+      ['identical', 'identical copies', identical],
+      ['different', 'different versions', different],
+    ]) {
+      const b = this._el('button', 'zune-diff-group-btn' + (this.dupeKind === kind ? ' active' : ''), `${label} (${extra(list)})`);
+      b.addEventListener('click', () => { this.dupeKind = kind; this.limit = PAGE_SIZE; this.status = ''; this._draw(); });
+      kinds.appendChild(b);
+    }
+    c.appendChild(kinds);
+
+    c.appendChild(this._el('div', 'song-fixer-note', this.dupeKind === 'identical'
+      ? 'same song, same album, same file size and length — the extras are exact copies, so these are safe to delete without checking each one.'
+      : 'same song but a different album or a different file (quality, length). the best copy is picked for you and its reasons are shown — worth a quick look before deleting.'));
 
     const bar = this._el('div', 'zune-diff-actions song-fixer-actions');
     const del = this._el('button', 'zune-sync-btn zune-diff-delete-btn',
@@ -430,16 +448,19 @@ class SongFixerView {
       () => onZune ? this._deleteZuneDupes(ticked.map(i => i.id)) : this._deleteLocal(ticked.map(i => i.id), { removeFromZune: false }));
     bar.appendChild(del);
     c.appendChild(bar);
+    this.statusEl = this._el('div', 'song-fixer-status', this.status);
     c.appendChild(this.statusEl);
 
     const list = this._el('div', 'song-fixer-list');
+    if (!groups.length) list.appendChild(this._el('div', 'zune-diff-empty', 'none in this list'));
     for (const g of groups.slice(0, this.limit)) {
       const head = this._el('div', 'zune-diff-group-header song-fixer-dupe-head');
-      head.appendChild(this._el('span', 'zune-diff-group-name', `${g.title} \u2014 ${g.artist || '?'}`));
+      head.appendChild(this._el('span', 'zune-diff-group-name', `${g.title} — ${g.artist || '?'}`));
       head.appendChild(this._el('span', 'zune-diff-group-meta', `${g.items.length} copies`));
       list.appendChild(head);
       for (const it of g.items) {
-        const row = this._el('label', 'zune-diff-item song-fixer-row');
+        const keep = it.id === g.keepId;
+        const row = this._el('label', 'zune-diff-item song-fixer-row' + (keep ? ' song-fixer-keep' : ''));
         const box = this._el('input', 'zune-diff-check');
         box.type = 'checkbox';
         box.checked = isTicked(g, it);
@@ -448,9 +469,16 @@ class SongFixerView {
         const info = this._el('div', 'zune-diff-info');
         const mins = it.duration ? `${Math.floor(it.duration / 60)}:${String(Math.round(it.duration % 60)).padStart(2, '0')}` : '';
         const size = it.size ? `${(it.size / 1048576).toFixed(1)} MB` : '';
-        info.appendChild(this._el('div', 'zune-diff-title',
-          `${it.album || 'no album'}${it.id === g.keepId ? '  \u00b7  suggested keep' : ''}`));
-        info.appendChild(this._el('div', 'zune-diff-meta', [it.format, mins, size, it.where].filter(Boolean).join('  \u00b7  ')));
+        info.appendChild(this._el('div', 'zune-diff-title', it.album || 'no album'));
+        info.appendChild(this._el('div', 'zune-diff-meta', [it.format, mins, size, it.where].filter(Boolean).join('  ·  ')));
+        const why = this._el('div', 'song-fixer-why');
+        if (keep) {
+          why.appendChild(this._el('span', 'song-fixer-keep-label', 'keep'));
+          if (it.good.length) why.appendChild(document.createTextNode(' — ' + it.good.join(', ')));
+        } else if (it.bad.length) {
+          why.appendChild(document.createTextNode(it.bad.join(', ')));
+        }
+        info.appendChild(why);
         row.appendChild(info);
         list.appendChild(row);
       }

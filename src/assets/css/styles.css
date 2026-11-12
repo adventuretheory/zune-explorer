@@ -4375,3 +4375,7 @@ body.platform-linux .now-playing-panel {
 .song-fixer-actions .zune-sync-btn:disabled { color: rgba(255, 255, 255, 0.15) !important; }
 .song-fixer-dupe-head { margin-top: 14px; cursor: default; }
 .song-fixer .zune-diff-delete-btn.confirm { background: rgba(255, 51, 51, 0.1); }
+.song-fixer-why { font-size: 12px; color: var(--zune-text-dim); }
+.song-fixer-keep-label { color: #7bd88f; }
+.song-fixer-keep .zune-diff-title { color: #fff; }
+.song-fixer .zune-diff-group-bar { margin: 4px 0; }

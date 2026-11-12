@@ -297,12 +297,72 @@ function tagKey(title, artist) {
 // Duplicates
 // ---------------------------------------------------------------------------
 
+const COMPILATION_RE = /\b(greatest hits|best of|the best|hits|collection|anthology|now that.?s|what i call music|now \d+|ultimate|essentials?|compilation|various|mixtape|top \d+|party|club|workout|karaoke|ministry of sound|nrj|bravo hits|soundtrack)\b/i;
+const OUT_OF_PLACE_RE = /[/\\](downloads|desktop|tmp|temp|\.trash|trash)[/\\]/i;
+const COPY_SUFFIX_RE = /( copy( \d+)?| \(\d+\)|[ _-]\d{1,2})$/i;
+
+function kbpsOf(it) {
+  return it.size > 0 && it.duration > 0 ? Math.round((it.size * 8) / it.duration / 1000) : 0;
+}
+
+/**
+ * Score one copy of a song. Higher is better. `good`/`bad` are short reasons
+ * shown next to the copy so people can see why one was picked.
+ */
+function scoreCopy(it, group) {
+  const good = [];
+  const bad = [];
+  let score = 0;
+  const album = clean(it.album);
+  const realAlbum = !!album && !PLACEHOLDER_RE.test(album) && !GUID_RE.test(album) && !URL_RE.test(album);
+
+  if (suspectReasons(it, it.where || '').length === 0) { score += 4; good.push('clean tags'); }
+  else bad.push('messy tags');
+
+  if (realAlbum) {
+    const compilation = COMPILATION_RE.test(album) || /various/i.test(clean(it.albumArtist));
+    if (compilation) { score += 1; bad.push('compilation'); }
+    else { score += 3; good.push('original album'); }
+  } else {
+    bad.push('no album');
+  }
+
+  if (it.where && OUT_OF_PLACE_RE.test(it.where)) { score -= 2; bad.push('in downloads/desktop'); }
+
+  // "Song (1).mp3", "Song copy.mp3", "Song 2.mp3" next to a plain "Song.mp3"
+  const stem = String(it.where || '').split(/[/\\]/).pop().replace(/\.[^.]+$/, '');
+  if (COPY_SUFFIX_RE.test(stem)) {
+    const plain = stem.replace(COPY_SUFFIX_RE, '').toLowerCase();
+    const others = group.filter(o => o !== it).map(o => String(o.where || '').split(/[/\\]/).pop().replace(/\.[^.]+$/, '').toLowerCase());
+    if (/ copy| \(\d+\)/i.test(stem) || others.includes(plain)) { score -= 3; bad.push('looks like a copy'); }
+  }
+
+  if (it.hasArt) { score += 1; good.push('cover art'); }
+  if (it.trackNumber > 0) score += 1;
+  if (it.year > 0) score += 1;
+
+  const kbps = kbpsOf(it);
+  const best = Math.max(...group.map(kbpsOf));
+  if (kbps && best) {
+    if (kbps >= best * 0.95) { score += 2; good.push(`best quality (${kbps} kbps)`); }
+    else if (kbps < best * 0.7) { score -= 1; bad.push(`lower quality (${kbps} kbps)`); }
+    else good.push(`${kbps} kbps`);
+  }
+  return { score, good, bad, kbps };
+}
+
 /**
  * Group copies of the same song: same title and artist (ignoring case and
  * punctuation) and lengths within a few seconds. Songs without a real title
  * are skipped — there's nothing reliable to compare.
- * @param items [{ id, title, artist, album, duration (seconds), size, hasArt }]
- * @returns [{ title, artist, items, keepId }] with the suggested keeper first
+ *
+ * Each group is 'identical' (same album, same size and length — safe to clean
+ * up without looking) or 'different' (different album or file — worth a look).
+ *
+ * @param items [{ id, title, artist, album, albumArtist, duration (s), size,
+ *                 hasArt, trackNumber, year, where (path or file name) }]
+ * @returns [{ title, artist, kind, items, keepId }] with the keeper first; every
+ *          item gets { score, good, bad, kbps }
  */
 function findDuplicateGroups(items, { toleranceSec = 3 } = {}) {
   const byKey = new Map();
@@ -313,17 +373,6 @@ function findDuplicateGroups(items, { toleranceSec = 3 } = {}) {
     if (!byKey.has(k)) byKey.set(k, []);
     byKey.get(k).push(it);
   }
-
-  const albumIsReal = (a) => {
-    const v = clean(a);
-    return !!v && !PLACEHOLDER_RE.test(v) && !GUID_RE.test(v) && !URL_RE.test(v);
-  };
-  const rank = (it) => [albumIsReal(it.album) ? 1 : 0, it.hasArt ? 1 : 0, it.size || 0];
-  const better = (a, b) => {
-    const ra = rank(a), rb = rank(b);
-    for (let i = 0; i < ra.length; i++) if (ra[i] !== rb[i]) return ra[i] > rb[i];
-    return false;
-  };
 
   const groups = [];
   for (const list of byKey.values()) {
@@ -343,10 +392,23 @@ function findDuplicateGroups(items, { toleranceSec = 3 } = {}) {
 
     for (const c of clusters) {
       if (c.length < 2) continue;
-      let keep = c[0];
-      for (const it of c) if (better(it, keep)) keep = it;
-      const ordered = [keep, ...c.filter(i => i !== keep)];
-      groups.push({ title: clean(keep.title), artist: clean(keep.artist), items: ordered, keepId: keep.id });
+      const scored = c.map(it => ({ ...it, ...scoreCopy(it, c) }));
+      scored.sort((a, b) =>
+        b.score - a.score || b.kbps - a.kbps || (b.size || 0) - (a.size || 0) ||
+        String(a.where || '').length - String(b.where || '').length);
+      const keep = scored[0];
+
+      const sameAlbum = scored.every(i => norm(i.album) === norm(keep.album));
+      const sameFile = scored.every(i =>
+        Math.abs((i.size || 0) - (keep.size || 0)) <= Math.max(keep.size || 0, 1) * 0.02 &&
+        Math.abs((i.duration || 0) - (keep.duration || 0)) <= 1.5);
+      groups.push({
+        title: clean(keep.title),
+        artist: clean(keep.artist),
+        kind: sameAlbum && sameFile ? 'identical' : 'different',
+        items: scored,
+        keepId: keep.id,
+      });
     }
   }
   groups.sort((a, b) => a.title.localeCompare(b.title));

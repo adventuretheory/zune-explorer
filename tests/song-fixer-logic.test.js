@@ -177,3 +177,42 @@ test('planZuneUpdate removes deleted songs from the Zune unless another copy sta
   assert.deepEqual(plan.replace, []);
   assert.deepEqual(plan.resend, []);
 });
+
+test('duplicate keeper prefers the original album, the Music folder and real files over copies', () => {
+  const groups = L.findDuplicateGroups([
+    // Same song on a compilation (bigger file) vs. the original album
+    { id: 'comp', title: 'Clocks', artist: 'Coldplay', album: 'Now That’s What I Call Music! 54', duration: 307, size: 12.3e6, where: '/Music/Now 54/Clocks.mp3', hasArt: true, trackNumber: 3, year: 2003 },
+    { id: 'orig', title: 'Clocks', artist: 'Coldplay', album: 'A Rush of Blood to the Head', duration: 307, size: 12.2e6, where: '/Music/Coldplay/Clocks.mp3', hasArt: true, trackNumber: 5, year: 2002 },
+    // Identical file sitting in Downloads, and a Finder-style "(1)" copy
+    { id: 'dl', title: 'Heaven', artist: 'DJ Sammy', album: 'Heaven', duration: 230, size: 9.2e6, where: '/Users/me/Downloads/Heaven.mp3', trackNumber: 3 },
+    { id: 'lib', title: 'Heaven', artist: 'DJ Sammy', album: 'Heaven', duration: 230, size: 9.2e6, where: '/Users/me/Music/Heaven.mp3', trackNumber: 3 },
+    { id: 'one', title: 'Heaven', artist: 'DJ Sammy', album: 'Heaven', duration: 230, size: 9.2e6, where: '/Users/me/Music/Heaven (1).mp3', trackNumber: 3 },
+    // Low bitrate rip vs. good one; the bad one has a website as its album
+    { id: 'low', title: 'Song', artist: 'A', album: 'DOPEHOOD.COM', duration: 200, size: 3.2e6, where: '/Music/a.mp3' },
+    { id: 'hi', title: 'Song', artist: 'A', album: 'Album', duration: 200, size: 8e6, where: '/Music/b.mp3' },
+  ]);
+  const byTitle = Object.fromEntries(groups.map(g => [g.title, g]));
+
+  assert.equal(byTitle.Clocks.keepId, 'orig');
+  assert.equal(byTitle.Clocks.kind, 'different');
+  assert.ok(byTitle.Clocks.items[0].good.includes('original album'));
+  assert.ok(byTitle.Clocks.items[1].bad.includes('compilation'));
+
+  assert.equal(byTitle.Heaven.keepId, 'lib');
+  assert.equal(byTitle.Heaven.kind, 'identical');
+  const notes = Object.fromEntries(byTitle.Heaven.items.map(i => [i.id, i.bad]));
+  assert.ok(notes.dl.includes('in downloads/desktop'));
+  assert.ok(notes.one.includes('looks like a copy'));
+
+  assert.equal(byTitle.Song.keepId, 'hi');
+  assert.equal(byTitle.Song.kind, 'different');
+  assert.ok(byTitle.Song.items[1].bad.some(b => /lower quality \(128 kbps\)/.test(b)));
+});
+
+test('a song named "Part 2" is not mistaken for a copy', () => {
+  const groups = L.findDuplicateGroups([
+    { id: 'x', title: 'Intro', artist: 'A', album: 'Album', duration: 60, size: 2e6, where: '/Music/Album/Part 2.mp3' },
+    { id: 'y', title: 'Intro', artist: 'A', album: 'Album', duration: 60, size: 2e6, where: '/Music/Other/Intro.mp3' },
+  ]);
+  assert.ok(!groups[0].items.some(i => i.bad.includes('looks like a copy')));
+});
