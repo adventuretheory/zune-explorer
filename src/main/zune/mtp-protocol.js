@@ -100,7 +100,18 @@ class MtpProtocol {
   }
 
   async receiveData() {
-    const initial = await this.transport.bulkRead(512);
+    // A data phase whose length is an exact multiple of the USB packet size is
+    // followed by a zero-length packet. It arrives where the next container is
+    // expected, so skip empty reads, and gather at least a full 12-byte header.
+    let initial = await this.transport.bulkRead(512);
+    for (let empties = 0; initial.length === 0; empties++) {
+      if (empties >= 8) throw new Error('MTP: device sent only empty packets');
+      initial = await this.transport.bulkRead(512);
+    }
+    while (initial.length < CONTAINER_HEADER_SIZE) {
+      const more = await this.transport.bulkRead(512);
+      initial = Buffer.concat([initial, more]);
+    }
 
     const totalLength = initial.readUInt32LE(0);
 
@@ -893,14 +904,18 @@ class MtpProtocol {
       if (chunk.length === 0) break; // safety valve
     }
 
-    // Drain the pipe (ignore errors)
-    try {
-      await Promise.race([
-        this.transport.bulkRead(512),
-        new Promise(resolve => setTimeout(resolve, 100)),
-      ]);
-    } catch {
-      // Expected — drain read often fails
+    // Drain a trailing zero-length packet if there is one. Use a USB-level
+    // timeout: a Promise.race would leave the read pending, and it would then
+    // swallow the start of the next reply.
+    if (typeof this.transport.setTransferTimeout === 'function') {
+      this.transport.setTransferTimeout(100);
+      try {
+        await this.transport.bulkRead(512);
+      } catch {
+        // Expected when there's nothing to drain
+      } finally {
+        this.transport.setTransferTimeout(0);
+      }
     }
 
     const payload = Buffer.concat(chunks, received);

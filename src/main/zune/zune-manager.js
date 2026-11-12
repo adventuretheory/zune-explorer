@@ -1642,6 +1642,9 @@ class ZuneManager extends EventEmitter {
       await this.transport.close();
       await new Promise(r => setTimeout(r, 1000));
       await withDeadline(this.transport.open(ZUNE_VENDOR_ID, this.productId), 10000, 'reopening USB');
+      // The device may still be holding replies to requests we abandoned
+      const stale = await this.transport.drainIn();
+      if (stale) console.log(`ZuneManager: discarded ${stale} stale bytes from the device`);
       // Every step gets a USB-level time limit so a confused device can't hang us
       this.transport.setTransferTimeout(10000);
       this.mtp = new MtpProtocol(this.transport);
