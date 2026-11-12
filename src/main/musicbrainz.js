@@ -78,6 +78,13 @@ async function searchReleases(album, artist) {
   }));
 }
 
+// Recording search (Lucene query). Results include releases with their
+// release group, date and track positions.
+async function searchRecordings(query, limit = 10) {
+  const url = `https://musicbrainz.org/ws/2/recording?query=${encodeURIComponent(query)}&limit=${limit}&fmt=json`;
+  return rateLimitedFetch(url);
+}
+
 async function getRelease(mbid) {
   const url = `https://musicbrainz.org/ws/2/release/${mbid}?inc=recordings+artist-credits+genres&fmt=json`;
   const data = await rateLimitedFetch(url);
@@ -172,4 +179,4 @@ async function getThumbnail(mbid) {
   }
 }
 
-module.exports = { searchReleases, getRelease, getCoverArt, getThumbnail, searchArtists, fetchUnlimited, fetchJsonUnlimited };
+module.exports = { searchRecordings, searchReleases, getRelease, getCoverArt, getThumbnail, searchArtists, fetchUnlimited, fetchJsonUnlimited };

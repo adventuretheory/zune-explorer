@@ -24,9 +24,10 @@ class SongFixer {
    * @param {string} opts.dataDir   where undo records are kept
    * @param {(url:string)=>Promise<{data:Buffer, contentType:string}>} [opts.fetchBinary]
    */
-  constructor({ ffmpegPath, dataDir, fetchBinary, trashItem }) {
+  constructor({ ffmpegPath, dataDir, fetchBinary, trashItem, searchRecordings }) {
     this.ffmpegPath = ffmpegPath;
     this.trashItem = trashItem; // moves a file to the system Trash (Electron shell.trashItem)
+    this.searchRecordings = searchRecordings; // MusicBrainz recording search, for title fallback
     this.undoDir = path.join(dataDir, 'song-fixer');
     this.fetchBinary = fetchBinary;
     this._chromaprint = null;
@@ -173,14 +174,53 @@ class SongFixer {
    * Recognise one file. Resolves to { current, proposal } where proposal is
    * null if AcoustID didn't recognise the song.
    */
-  async identify(filePath, apiKey) {
-    if (!apiKey) throw new Error('Add your AcoustID key first');
-    const current = await this.readTags(filePath);
-    if (!current.duration) throw new Error('Could not read the song length');
-    const fp = await this.fingerprint(filePath);
-    const response = await this._acoustidLookup(apiKey, fp, current.duration);
-    const proposal = logic.pickBestMatch(response, current);
-    return { current, proposal };
+  async identify(filePath, apiKey, libraryTrack = {}) {
+    let current;
+    try {
+      current = await this.readTags(filePath);
+    } catch {
+      current = { title: '', artist: '', album: '', duration: 0 };
+    }
+
+    // 1. Listen to the audio (needs an AcoustID key and a readable length)
+    let soundError = null;
+    if (apiKey && current.duration) {
+      try {
+        const fp = await this.fingerprint(filePath);
+        const response = await this._acoustidLookup(apiKey, fp, current.duration);
+        const proposal = logic.pickBestMatch(response, current);
+        if (proposal) return { current, proposal: { ...proposal, source: 'sound' } };
+      } catch (err) {
+        // A rejected key affects every song; report it rather than hide it
+        if (/key/i.test(err.message)) throw err;
+        soundError = err;
+      }
+    }
+
+    // 2. Fall back to the words in the title (or file name)
+    const proposal = await this._identifyByTitle(filePath, current, libraryTrack);
+    if (proposal) return { current, proposal };
+    // Neither worked: say why the sound check couldn't run, if it failed
+    if (soundError) throw soundError;
+    return { current, proposal: null, triedSound: !!(apiKey && current.duration) };
+  }
+
+  async _identifyByTitle(filePath, current, libraryTrack) {
+    if (!this.searchRecordings) return null;
+    // Prefer what the file says; the library's view fills gaps
+    const track = {
+      title: current.title || libraryTrack.title || '',
+      artist: current.artist || libraryTrack.artist || '',
+      album: current.album || libraryTrack.album || '',
+    };
+    const terms = logic.titleSearchTerms(track, filePath);
+    for (const query of logic.titleSearchQueries(terms)) {
+      let response;
+      try { response = await this.searchRecordings(query); } catch { continue; }
+      const proposal = logic.pickTitleSearchMatch(response, terms, current.duration || libraryTrack.duration || 0, current);
+      if (proposal) return proposal;
+    }
+    return null;
   }
 
   // ---- Writing --------------------------------------------------------------

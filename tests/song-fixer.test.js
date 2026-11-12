@@ -123,3 +123,25 @@ test('trash moves files away and queues Zune removal only when asked', async () 
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('identify falls back to a title search when there is no AcoustID key', async () => {
+  const { SongFixer } = require('../src/main/song-fixer.js');
+  const queries = [];
+  const sf = new SongFixer({
+    ffmpegPath: 'unused', dataDir: os.tmpdir(),
+    searchRecordings: async (q) => {
+      queries.push(q);
+      return { recordings: [{ id: 'r', score: 100, title: 'OMG', length: 269000,
+        'artist-credit': [{ name: 'Usher', joinphrase: ' feat. ' }, { name: 'will.i.am' }],
+        releases: [{ title: 'Raymond v. Raymond', date: '2010-03-30', 'release-group': { id: 'rg', 'primary-type': 'Album' }, media: [{ position: 1, track: [{ number: '4' }] }] }] }] };
+    },
+  });
+  // A file we can't read: tags come from the library's view of it
+  const r = await sf.identify('/nonexistent/02-Usher-OMG.mp3', '', { title: '02-Usher-OMG (Official Video)', artist: 'Unknown Artist', duration: 270 });
+  assert.equal(queries[0], 'recording:(usher omg) AND artist:(usher omg)');
+  assert.equal(r.proposal.source, 'title');
+  assert.equal(r.proposal.title, 'OMG');
+  assert.equal(r.proposal.artist, 'Usher feat. will.i.am');
+  assert.equal(r.proposal.album, 'Raymond v. Raymond');
+  assert.equal(r.proposal.trackNumber, 4);
+});

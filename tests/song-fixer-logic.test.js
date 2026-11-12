@@ -216,3 +216,61 @@ test('a song named "Part 2" is not mistaken for a copy', () => {
   ]);
   assert.ok(!groups[0].items.some(i => i.bad.includes('looks like a copy')));
 });
+
+test('titleSearchTerms cleans messy titles but keeps numbers that are part of the name', () => {
+  const t = (title, artist, file = '/m/x.mp3') => L.titleSearchTerms({ title, artist }, file);
+  assert.equal(t('1-11_March_2005-02-DJ_Sammy-Heaven(1-11_remix)', 'Unknown Artist').text, 'dj sammy heaven remix');
+  assert.equal(t('{09316835-3188-481c-a359-0f8d2a937ac8} - DJ Got Us Falling In Love - Usher').text, 'dj got us falling in love usher');
+  assert.equal(t('Usher - OMG (Official Music Video) [www.dopehood.com] 320kbps').text, 'usher omg');
+  assert.equal(t('', '', '/m/03 Coldplay - Clocks.mp3').text, 'coldplay clocks');
+  assert.equal(t('99 Problems', 'Jay-Z').text, '99 problems');
+  assert.equal(t('7 Rings').text, '7 rings');
+  assert.equal(t('2012 (Tags)', 'Jay Sean').text, '2012 tags');
+  assert.equal(t('2012 (Tags)', 'Jay Sean').artist, 'Jay Sean');
+  assert.equal(t('x', '{09316835-3188-481c-a359-0f8d2a937ac8}').artist, '');
+});
+
+test('titleSearchQueries searches title words against the known artist first', () => {
+  const q = L.titleSearchQueries(L.titleSearchTerms({ title: 'Jay Sean - Down', artist: 'Jay Sean' }, '/m/x.mp3'));
+  assert.equal(q[0], 'recording:(down) AND artist:(jay sean)');
+  assert.equal(q[1], 'recording:(jay sean down) AND artist:(jay sean down)');
+  assert.deepEqual(L.titleSearchQueries({ text: '', artist: '' }), []);
+});
+
+// Shaped like MusicBrainz /ws/2/recording?query=...&fmt=json
+const mbHeaven = {
+  recordings: [
+    { id: 'wrong', score: 100, title: 'Heaven', length: 245000, 'artist-credit': [{ name: 'Bryan Adams' }], releases: [] },
+    { id: 'long', score: 95, title: 'Heaven (Extended Mix)', length: 412000, 'artist-credit': [{ name: 'DJ Sammy' }], releases: [] },
+    {
+      id: 'rec-heaven', score: 90, title: 'Heaven', length: 231000,
+      'artist-credit': [{ name: 'DJ Sammy', joinphrase: ' & ' }, { name: 'Yanou' }],
+      releases: [
+        { id: 'r1', title: 'Heaven', date: '2002-06-10', 'release-group': { id: 'rg-album', 'primary-type': 'Album', 'secondary-types': [] },
+          media: [{ position: 1, track: [{ number: '3' }] }] },
+        { id: 'r2', title: 'Now 54', date: '2003', 'release-group': { id: 'rg-now', 'primary-type': 'Album', 'secondary-types': ['Compilation'] },
+          media: [{ position: 1, track: [{ number: '12' }] }] },
+      ],
+    },
+  ],
+};
+
+test('pickTitleSearchMatch needs the title and artist words in the messy title, and a matching length', () => {
+  const terms = L.titleSearchTerms({ title: '1-11_March_2005-02-DJ_Sammy-Heaven(1-11_remix)' }, '/m/x.mp3');
+  const p = L.pickTitleSearchMatch(mbHeaven, terms, 230);
+  assert.equal(p.source, 'title');
+  assert.equal(p.recordingId, 'rec-heaven');      // not Bryan Adams (artist not in title), not the 7-minute mix
+  assert.equal(p.artist, 'DJ Sammy & Yanou');
+  assert.equal(p.album, 'Heaven');
+  assert.equal(p.year, 2002);
+  assert.equal(p.trackNumber, 3);
+  assert.equal(p.releaseGroupId, 'rg-album');
+  assert.ok(p.score > 0.5 && p.score <= 0.95);
+  assert.deepEqual(p.albums.map(a => a.album), ['Heaven', 'Now 54']);
+
+  // Wrong length (a 4-minute file) rules out the 3:51 recording
+  assert.equal(L.pickTitleSearchMatch(mbHeaven, terms, 300), null);
+  // Title words missing from what we have -> no match
+  const other = L.titleSearchTerms({ title: 'DJ Sammy - Sunlight' }, '/m/x.mp3');
+  assert.equal(L.pickTitleSearchMatch(mbHeaven, other, 230), null);
+});

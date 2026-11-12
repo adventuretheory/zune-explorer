@@ -415,7 +415,159 @@ function findDuplicateGroups(items, { toleranceSec = 3 } = {}) {
   return groups;
 }
 
+// ---------------------------------------------------------------------------
+// Title search: when the audio isn't recognised, use the words in the title
+// ---------------------------------------------------------------------------
+
+const NOISE_RE = /\b(official( music)? video|official audio|music video|lyrics?( video)?|lyric video|audio|video|hq|hd|high quality|\d{2,3} ?kbps|mp3|m4a|wma|free download|download|full song|explicit|clean|radio rip|remaster(ed)?( \d{4})?|youtube)\b/gi;
+const MONTH_RE = /\b(jan(uary)?|feb(ruary)?|mar(ch)?|apr(il)?|may|june?|july?|aug(ust)?|sept?(ember)?|oct(ober)?|nov(ember)?|dec(ember)?)[ ._-]*(19|20)\d{2}\b/gi;
+
+function words(s) {
+  return norm(s).split(' ').filter(Boolean);
+}
+
+/**
+ * Turn a messy title (or file name) into words worth searching for.
+ * "1-11_March_2005-02-DJ_Sammy-Heaven(1-11_remix)" -> "dj sammy heaven remix"
+ * @returns {{ text: string, artist: string, parts: string[] }} text '' when nothing usable
+ */
+function titleSearchTerms(track, filePath) {
+  let raw = clean(track.title);
+  if (!raw || PLACEHOLDER_RE.test(raw) || GUID_RE.test(raw)) raw = fileStem(filePath);
+  let t = raw
+    .replace(/\{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}?/gi, ' ')
+    .replace(/\[[^\]]*(www\.|\.com|\.net|\.org)[^\]]*\]/gi, ' ')
+    .replace(/(https?:\/\/)?(www\.)?[a-z0-9-]+\.(com|net|org|info|biz|ru|co\.uk|me|tv|fm)\b\S*/gi, ' ')
+    .replace(/_/g, ' ')
+    .replace(MONTH_RE, ' ')
+    .replace(/\b(19|20)\d{2}[-.](0?[1-9]|1[0-2])([-.]\d{1,2})?\b/g, ' ')
+    .replace(NOISE_RE, ' ');
+  // Leading track/disc numbers: "01 ", "1-11 ", "02-", "3. "
+  // Only clear track numbers: zero-padded ("03 "), followed by a separator
+  // ("3. ", "02-"), or disc-track pairs ("1-11 ") — so "99 Problems" stays.
+  t = t.replace(/^\s*(?:(?:0\d{1,2}|\d{1,3}[-.]\d{1,3})(?:\s*[-.)]\s*|\s+)|\d{1,3}\s*[-.)]\s*)+(?=\D)/, ' ');
+  // Number pairs like "1-11" left over inside the text
+  t = t.replace(/\b\d{1,2}-\d{1,2}\b/g, ' ');
+
+  const parts = t.split(/\s+-\s+|\s*[-–—]\s*(?=[A-Za-z])/).map(x => words(x).join(' ')).filter(Boolean);
+  const text = words(t).join(' ');
+
+  const artist = clean(track.artist);
+  const realArtist = artist && !PLACEHOLDER_RE.test(artist) && !GUID_RE.test(artist) && !URL_RE.test(artist)
+    && !/^unknown artist$/i.test(artist) ? artist : '';
+  return { text, artist: realArtist, parts };
+}
+
+function luceneWords(s) {
+  return words(s).map(w => w.replace(/[^\p{L}\p{N}']/gu, '')).filter(w => w.length > 0).join(' ');
+}
+
+/** MusicBrainz recording queries to try, most specific first. */
+function titleSearchQueries(terms) {
+  const q = [];
+  const all = luceneWords(terms.text);
+  if (!all) return q;
+  if (terms.artist) {
+    const a = luceneWords(terms.artist);
+    // Title words are whatever isn't the artist's name
+    const aw = new Set(words(terms.artist));
+    const titleOnly = luceneWords(words(terms.text).filter(w => !aw.has(w)).join(' ')) || all;
+    q.push(`recording:(${titleOnly}) AND artist:(${a})`);
+  }
+  // We don't know which words are the artist and which the title: let both
+  // fields match any of them, and let relevance sort it out.
+  q.push(`recording:(${all}) AND artist:(${all})`);
+  return q;
+}
+
+function creditName(credit) {
+  return (credit || []).map(c => (c.name || c.artist?.name || '') + (c.joinphrase || '')).join('').trim();
+}
+
+/**
+ * Pick a MusicBrainz recording whose title words all appear in the messy
+ * title, whose artist appears in it too (or matches the known artist), and
+ * whose length matches. Returns a proposal like pickBestMatch, with
+ * source: 'title', or null.
+ */
+function pickTitleSearchMatch(mbResponse, terms, durationSec, current = {}) {
+  const have = new Set(words(terms.text));
+  const knownArtist = words(terms.artist);
+  const candidates = [];
+  for (const rec of mbResponse?.recordings || []) {
+    const titleWords = words(rec.title).filter(w => !/^(the|a|an|feat|ft|and)$/.test(w));
+    if (!titleWords.length) continue;
+    const covered = titleWords.filter(w => have.has(w)).length / titleWords.length;
+    if (covered < 1) continue; // every title word must be in what we have
+
+    const artistName = creditName(rec['artist-credit']);
+    // Judge by the main artist; featured artists rarely make it into file names
+    const credit = rec['artist-credit'] || [];
+    const mainArtist = credit[0]?.name || credit[0]?.artist?.name || artistName;
+    const aw = words(mainArtist).filter(w => !/^(the|feat|ft|and)$/.test(w));
+    const artistOk = knownArtist.length
+      ? aw.some(w => knownArtist.includes(w))
+      : aw.length > 0 && aw.filter(w => have.has(w)).length / aw.length >= 0.5;
+    if (!artistOk) continue;
+
+    const lenSec = rec.length ? rec.length / 1000 : 0;
+    if (durationSec && lenSec && Math.abs(lenSec - durationSec) > 8) continue; // a different version
+    const lengthMatch = !!(durationSec && lenSec && Math.abs(lenSec - durationSec) <= 3);
+
+    // Prefer candidates that explain more of our words
+    const used = new Set([...titleWords, ...aw]);
+    const explained = [...have].filter(w => used.has(w)).length / Math.max(have.size, 1);
+    const score = Math.min(0.95, ((rec.score || 0) / 100) * 0.5 + explained * 0.3 + (lengthMatch ? 0.2 : 0));
+    candidates.push({ rec, score, artistName });
+  }
+  if (!candidates.length) return null;
+  candidates.sort((a, b) => b.score - a.score);
+  const { rec, score, artistName } = candidates[0];
+
+  // Reshape into the AcoustID form so album choice works the same way
+  const groups = new Map();
+  for (const rel of rec.releases || []) {
+    const rg = rel['release-group'] || {};
+    const id = rg.id || rel.id;
+    if (!groups.has(id)) {
+      groups.set(id, {
+        id: rg.id || null, title: rel.title, type: rg['primary-type'] || '',
+        secondarytypes: rg['secondary-types'] || [],
+        artists: rel['artist-credit'] ? [{ name: creditName(rel['artist-credit']) }] : undefined,
+        releases: [],
+      });
+    }
+    const year = rel.date ? parseInt(String(rel.date).slice(0, 4), 10) : null;
+    groups.get(id).releases.push({
+      date: year ? { year } : undefined,
+      mediums: (rel.media || []).map(m => ({
+        position: m.position,
+        tracks: (m.track || []).map(tr => ({ position: parseInt(tr.number, 10) || null })),
+      })),
+    });
+  }
+  const albums = albumOptions({ id: rec.id, artists: [{ name: artistName }], releasegroups: [...groups.values()] }, current.album);
+  const top = albums[0] || {};
+  return {
+    score,
+    source: 'title',
+    recordingId: rec.id || null,
+    title: rec.title,
+    artist: artistName,
+    album: top.album || null,
+    albumArtist: top.albumArtist || artistName || null,
+    year: top.year || null,
+    trackNumber: top.trackNumber || null,
+    discNumber: top.discNumber || null,
+    releaseGroupId: top.releaseGroupId || null,
+    albums,
+  };
+}
+
 const songFixerLogic = {
+  titleSearchTerms,
+  titleSearchQueries,
+  pickTitleSearchMatch,
   planZuneUpdate,
   findDuplicateGroups,
   tagKey,

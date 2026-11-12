@@ -4379,3 +4379,4 @@ body.platform-linux .now-playing-panel {
 .song-fixer-keep-label { color: #7bd88f; }
 .song-fixer-keep .zune-diff-title { color: #fff; }
 .song-fixer .zune-diff-group-bar { margin: 4px 0; }
+.song-fixer-title-match { color: #ffb347; font-size: 12px; }

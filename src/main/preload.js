@@ -207,7 +207,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   consumeFirstRun: () => ipcRenderer.invoke('consume-first-run'),
   pickFolder: (title) => ipcRenderer.invoke('pick-folder', title),
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
-  songFixerIdentify: (filePath) => ipcRenderer.invoke('song-fixer-identify', filePath),
+  songFixerIdentify: (filePath, libraryTrack) => ipcRenderer.invoke('song-fixer-identify', filePath, libraryTrack),
   songFixerApply: (batchId, filePath, tags, opts) => ipcRenderer.invoke('song-fixer-apply', batchId, filePath, tags, opts),
   songFixerUndoInfo: () => ipcRenderer.invoke('song-fixer-undo-info'),
   songFixerUndo: () => ipcRenderer.invoke('song-fixer-undo'),

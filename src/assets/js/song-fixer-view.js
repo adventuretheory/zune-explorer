@@ -194,8 +194,10 @@ class SongFixerView {
     }
 
     const identify = this._el('button', 'zune-sync-btn zune-push-btn', `identify ${toIdentify.length} song${toIdentify.length === 1 ? '' : 's'}`);
-    identify.disabled = toIdentify.length === 0 || !this.hasKey;
-    if (!this.hasKey) identify.title = 'add your AcoustID key above first';
+    identify.disabled = toIdentify.length === 0;
+    identify.title = this.hasKey
+      ? 'listens to each song, and searches by its title if the sound isn\u2019t recognised'
+      : 'searches by title only \u2014 add an AcoustID key above to also recognise songs by sound';
     identify.addEventListener('click', () => this._identify(toIdentify));
 
     const apply = this._el('button', 'zune-sync-btn zune-pull-btn', `apply ${toApply.length} fix${toApply.length === 1 ? '' : 'es'}`);
@@ -295,7 +297,7 @@ class SongFixerView {
         line.textContent = 'listening…';
         return line;
       case 'none':
-        line.textContent = 'not recognised';
+        line.textContent = this.hasKey ? 'not recognised by sound or title' : 'not found by title';
         line.classList.add('dim');
         return line;
       case 'error':
@@ -327,7 +329,11 @@ class SongFixerView {
     });
     const extra = [p.year, p.trackNumber ? `track ${p.trackNumber}` : null].filter(Boolean).join(', ');
     if (extra) line.appendChild(document.createTextNode(` (${extra})`));
-    line.appendChild(this._el('span', 'song-fixer-score', `  ${pct}% match`));
+    if (p.source === 'title') {
+      line.appendChild(this._el('span', 'song-fixer-title-match', '  found by title \u2014 check it'));
+    } else {
+      line.appendChild(this._el('span', 'song-fixer-score', `  ${pct}% match`));
+    }
     if (changes.length === 0) line.appendChild(this._el('span', 'song-fixer-score', ' · tags already match'));
 
     const albums = item.result.proposal.albums || [];
@@ -557,7 +563,10 @@ class SongFixerView {
       this._updateRow(item);
       this._setStatus(`identifying ${n + 1} of ${items.length}…`);
 
-      const res = await window.electronAPI.songFixerIdentify(item.path);
+      const t = item.track || {};
+      const res = await window.electronAPI.songFixerIdentify(item.path, {
+        title: t.title, artist: t.artist, album: t.album, duration: t.duration,
+      });
       if (!res.success) {
         item.state = 'error';
         item.error = res.error;

@@ -107,6 +107,7 @@ app.whenReady().then(async () => {
     dataDir: app.getPath('userData'),
     fetchBinary: musicbrainz.fetchUnlimited,
     trashItem: (p) => shell.trashItem(p),
+    searchRecordings: musicbrainz.searchRecordings,
   });
   artistImages = new ArtistImages(app.getPath('userData'), {
     searchArtists: musicbrainz.searchArtists,
@@ -1096,11 +1097,17 @@ ipcMain.handle('metadata-fetch', async (event, mbid) => {
 });
 
 // Song fixer: recognise songs by audio (AcoustID) and rewrite their tags
-ipcMain.handle('song-fixer-identify', async (event, filePath) => {
+ipcMain.handle('song-fixer-identify', async (event, filePath, libraryTrack) => {
   try {
     if (typeof filePath !== 'string' || !isAllowedPath(filePath)) throw new Error('Path not allowed');
     const key = (preferences.get('songFixer.acoustidKey') || '').trim();
-    const result = await songFixer.identify(filePath, key);
+    const lt = libraryTrack && typeof libraryTrack === 'object' ? {
+      title: String(libraryTrack.title || '').slice(0, 500),
+      artist: String(libraryTrack.artist || '').slice(0, 500),
+      album: String(libraryTrack.album || '').slice(0, 500),
+      duration: Number(libraryTrack.duration) || 0,
+    } : {};
+    const result = await songFixer.identify(filePath, key, lt);
     return { success: true, ...result };
   } catch (error) {
     return { success: false, error: error.message };
