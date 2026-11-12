@@ -96,12 +96,24 @@ class ZuneSyncPanel {
             e.dataTransfer.dropEffect = 'copy';
         });
 
-        document.getElementById('zune-sync-music').addEventListener('click', () => {
+        document.getElementById('zune-sync-music').addEventListener('click', (e) => {
             // Extensionless files are only music if they were readable as audio
             const paths = this.explorer.categorizedFiles.music
                 .filter(f => f.extension || this.explorer.musicLibrary.tracks.has(f.path))
                 .map(f => f.path);
-            if (paths.length > 0) this._sendFiles(paths);
+            if (paths.length === 0) return;
+            // This sends the whole library; make a big send a deliberate choice
+            const btn = e.currentTarget;
+            if (paths.length > 100 && !btn.dataset.confirming) {
+                btn.dataset.confirming = '1';
+                btn.dataset.label = btn.dataset.label || btn.textContent;
+                btn.textContent = `send all ${paths.length} songs? click again`;
+                setTimeout(() => { delete btn.dataset.confirming; btn.textContent = btn.dataset.label; }, 4000);
+                return;
+            }
+            delete btn.dataset.confirming;
+            if (btn.dataset.label) btn.textContent = btn.dataset.label;
+            this._sendFiles(paths);
         });
         document.getElementById('zune-sync-videos').addEventListener('click', () => {
             const paths = this.explorer.categorizedFiles.videos.map(f => f.path);
@@ -291,6 +303,11 @@ class ZuneSyncPanel {
         // Rescan device
         document.getElementById('zune-rescan-btn').addEventListener('click', () => {
             this._rescanDevice();
+        });
+
+        // Put songs repaired by the song fixer onto the Zune (replacing old copies)
+        document.getElementById('zune-update-fixed-btn').addEventListener('click', () => {
+            this._updateFixedSongs();
         });
 
         // Diff back button
@@ -1435,6 +1452,95 @@ class ZuneSyncPanel {
             this.diffResult.localOnly.length + ' to sync';
         document.getElementById('zune-diff-device-only').textContent =
             this.diffResult.deviceOnly.length + ' on device only';
+        this._refreshFixedButton();
+    }
+
+    // ---- Song fixer → Zune ----
+    async _refreshFixedButton() {
+        const btn = document.getElementById('zune-update-fixed-btn');
+        if (!btn || this._fixedBusy || btn.dataset.confirming) return;
+        let pending = [];
+        if (this.diffCategory === 'music' && this.browseData) {
+            try { pending = await window.electronAPI.songFixerZunePending(); } catch { pending = []; }
+        }
+        this.fixedPending = pending;
+        btn.style.display = pending.length ? '' : 'none';
+        btn.textContent = `update ${pending.length} fixed song${pending.length === 1 ? '' : 's'}`;
+        btn.title = 'replace the old copies on your zune with the songs you fixed';
+        btn.disabled = false;
+    }
+
+    async _updateFixedSongs() {
+        const btn = document.getElementById('zune-update-fixed-btn');
+        if (this._fixedBusy || !this.browseData) return;
+        const logic = window.songFixerLogic;
+        const pending = await window.electronAPI.songFixerZunePending();
+        const current = new Map();
+        for (const e of pending) current.set(e.path, this.explorer.musicLibrary.tracks.get(e.path) || {});
+        const plan = logic.planZuneUpdate(pending, this.browseData.music || [], current);
+
+        if (plan.needsRescan.length) {
+            this.explorer.showToast?.('the zune list is out of date \u2014 press rescan, then update again');
+            return;
+        }
+        const count = plan.replace.length + plan.resend.length;
+
+        // First click: say what will happen, second click does it
+        if (!btn.dataset.confirming) {
+            if (count === 0) {
+                if (plan.upToDate.length) await window.electronAPI.songFixerZuneDone(plan.upToDate);
+                this.explorer.showToast?.(plan.notOnZune.length
+                    ? `none of your ${plan.notOnZune.length} fixed songs are on the zune \u2014 nothing to update`
+                    : 'your zune already has the fixed songs');
+                if (plan.notOnZune.length) await window.electronAPI.songFixerZuneDone(plan.notOnZune);
+                this._refreshFixedButton();
+                return;
+            }
+            btn.dataset.confirming = '1';
+            btn.textContent = `replace ${count} song${count === 1 ? '' : 's'} on zune? click again`;
+            this._fixedConfirmTimer = setTimeout(() => { delete btn.dataset.confirming; this._refreshFixedButton(); }, 4000);
+            return;
+        }
+        clearTimeout(this._fixedConfirmTimer);
+        delete btn.dataset.confirming;
+
+        this._fixedBusy = true;
+        btn.disabled = true;
+        btn.textContent = 'updating\u2026';
+        let removedPaths = [];
+        try {
+            // 1. Take the old copies off the Zune
+            if (plan.replace.length) {
+                const handles = plan.replace.map(r => r.handle);
+                const res = await window.electronAPI.zuneDeleteObjects(handles);
+                if (!res.success) throw new Error(res.error || 'could not remove the old copies');
+                const failedHandles = new Set((res.errors || []).map(e => e.handle));
+                removedPaths = plan.replace.filter(r => !failedHandles.has(r.handle)).map(r => r.path);
+                // Remember they're gone, so an interrupted update still resends them
+                await window.electronAPI.songFixerZuneRemoved(removedPaths);
+                const gone = new Set(handles.filter(h => !failedHandles.has(h)));
+                this.browseData.music = (this.browseData.music || []).filter(i => !gone.has(i.handle));
+                if (res.storage) this._updateStorage(res.storage);
+            }
+
+            // 2. Send the fixed files
+            const toSend = [...removedPaths, ...plan.resend];
+            const sent = toSend.length ? await window.electronAPI.zuneSendFiles(toSend) : { success: true, succeeded: [] };
+            if (!sent.success) throw new Error(sent.error || 'sending failed');
+            const succeeded = sent.succeeded || [];
+            await window.electronAPI.songFixerZuneDone([...succeeded, ...plan.upToDate, ...plan.notOnZune]);
+
+            const missed = toSend.length - succeeded.length;
+            this.explorer.showToast?.(`${succeeded.length} fixed song${succeeded.length === 1 ? '' : 's'} updated on zune` +
+                (missed ? `, ${missed} not sent (press update again to retry)` : '') +
+                (plan.notOnZune.length ? ` \u00b7 ${plan.notOnZune.length} fixed songs weren\u2019t on the zune, so they were left off` : ''));
+        } catch (err) {
+            this.explorer.showToast?.('update failed: ' + err.message);
+        } finally {
+            this._fixedBusy = false;
+        }
+        // New copies have new device IDs; read the Zune again
+        this._rescanDevice();
     }
 
     _renderDiffList() {

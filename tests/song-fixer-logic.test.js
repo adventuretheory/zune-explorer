@@ -89,3 +89,54 @@ test('buildTagArgs copies audio, keeps existing tags, and maps names per format'
   // Clearing a field (used by undo) passes an empty value
   assert.ok(L.buildTagArgs('a.mp3', 'b.mp3', { album: '' }, { ext: '.mp3' }).includes('album='));
 });
+
+test('planZuneUpdate finds the old copy on the Zune by file name or old tags', () => {
+  const pending = [
+    { path: '/m/heaven.mp3', fileName: 'heaven.mp3', before: { title: '1-11_March', artist: '' } },
+    { path: '/m/tags.mp3', fileName: 'tags.mp3', before: { title: '2012 (Tags)', artist: 'Jay Sean' } },
+    { path: '/m/new.mp3', fileName: 'new.mp3', before: { title: 'Nope', artist: 'Nobody' } },
+    { path: '/m/done.mp3', fileName: 'done.mp3', before: { title: 'Old', artist: 'X' } },
+    { path: '/m/gone.mp3', fileName: 'gone.mp3', before: { title: 'G', artist: 'G' }, removedFromZune: true },
+  ];
+  const device = [
+    { handle: 11, filename: 'HEAVEN.mp3', title: '1-11_March', artist: '' },
+    { handle: 12, filename: 'zune-name.wma', title: '2012 (tags)', artist: 'jay sean' },
+    { handle: 13, filename: 'other.mp3', title: 'Fixed', artist: 'X', album: 'Album' },
+    { handle: 14, filename: 'unrelated.mp3', title: 'Something', artist: 'Else' },
+  ];
+  const current = new Map([
+    ['/m/heaven.mp3', { title: 'Heaven', artist: 'DJ Sammy', album: 'Heaven' }],
+    ['/m/tags.mp3', { title: '2012', artist: 'Jay Sean', album: '2012' }],
+    ['/m/new.mp3', { title: 'Brand New', artist: 'Y', album: 'Z' }],
+    ['/m/done.mp3', { title: 'Fixed', artist: 'X', album: 'Album' }],
+  ]);
+  const plan = L.planZuneUpdate(pending, device, current);
+  assert.deepEqual(plan.replace, [{ path: '/m/heaven.mp3', handle: 11 }, { path: '/m/tags.mp3', handle: 12 }]);
+  assert.deepEqual(plan.notOnZune, ['/m/new.mp3']);
+  assert.deepEqual(plan.upToDate, ['/m/done.mp3']);
+  assert.deepEqual(plan.resend, ['/m/gone.mp3']);
+  assert.deepEqual(plan.needsRescan, []);
+});
+
+test('planZuneUpdate never uses one Zune copy for two songs, and asks for a rescan for unsent handles', () => {
+  const pending = [
+    { path: '/a/intro.mp3', fileName: 'intro.mp3', before: { title: 'Intro', artist: 'A' } },
+    { path: '/b/intro.mp3', fileName: 'intro.mp3', before: { title: 'Intro', artist: 'A' } },
+    { path: '/c/x.mp3', fileName: 'x.mp3', before: { title: 'X', artist: 'X' } },
+  ];
+  const device = [
+    { handle: 1, filename: 'intro.mp3', title: 'Intro', artist: 'A' },
+    { handle: 0, filename: 'x.mp3', title: 'X', artist: 'X' }, // pushed this session, no real handle yet
+  ];
+  const plan = L.planZuneUpdate(pending, device, new Map());
+  assert.deepEqual(plan.replace, [{ path: '/a/intro.mp3', handle: 1 }]);
+  assert.deepEqual(plan.notOnZune, ['/b/intro.mp3']);
+  assert.deepEqual(plan.needsRescan, ['/c/x.mp3']);
+});
+
+test('planZuneUpdate replaces a copy whose title matches but album is still old', () => {
+  const pending = [{ path: '/m/s.mp3', fileName: 's.mp3', before: { title: 'Song', artist: 'A' } }];
+  const device = [{ handle: 5, filename: 's.mp3', title: 'Song', artist: 'A', album: 'DOPEHOOD.COM' }];
+  const plan = L.planZuneUpdate(pending, device, new Map([['/m/s.mp3', { title: 'Song', artist: 'A', album: 'Real Album' }]]));
+  assert.deepEqual(plan.replace, [{ path: '/m/s.mp3', handle: 5 }]);
+});

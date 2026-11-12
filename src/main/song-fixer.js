@@ -256,7 +256,77 @@ class SongFixer {
     }
 
     await this._record(batchId, { path: filePath, before, addedCover });
+    await this._addPending(filePath, current);
     return { addedCover };
+  }
+
+  // ---- Songs fixed here but not yet updated on the Zune ---------------------
+
+  _pendingFile() { return path.join(this.undoDir, 'zune-pending.json'); }
+
+  async _readPending() {
+    try {
+      return JSON.parse(await fs.readFile(this._pendingFile(), 'utf8'));
+    } catch (err) {
+      if (err.code !== 'ENOENT') return [];
+    }
+    // First use: songs fixed before this list existed are in the undo records
+    const list = [];
+    let names = [];
+    try { names = await fs.readdir(this.undoDir); } catch { /* nothing fixed yet */ }
+    const batches = names.filter(n => /^\d+\.json$/.test(n)).sort((x, y) => Number(x.slice(0, -5)) - Number(y.slice(0, -5)));
+    for (const name of batches) {
+      let entries = [];
+      try { entries = JSON.parse(await fs.readFile(path.join(this.undoDir, name), 'utf8')); } catch { continue; }
+      for (const e of entries) {
+        if (!e?.path || list.some(x => x.path === e.path)) continue;
+        list.push({
+          path: e.path,
+          fileName: path.basename(e.path),
+          before: { title: e.before?.title || '', artist: e.before?.artist || '', album: e.before?.album || '' },
+          removedFromZune: false,
+        });
+      }
+    }
+    if (list.length) await this._writePending(list);
+    return list;
+  }
+
+  async _writePending(list) {
+    await fs.mkdir(this.undoDir, { recursive: true });
+    await fs.writeFile(this._pendingFile(), JSON.stringify(list, null, 1));
+  }
+
+  async _addPending(filePath, oldTags) {
+    const list = await this._readPending();
+    // Keep the oldest tags: that's the version the Zune still has
+    if (!list.some(e => e.path === filePath)) {
+      list.push({
+        path: filePath,
+        fileName: path.basename(filePath),
+        before: { title: oldTags.title || '', artist: oldTags.artist || '', album: oldTags.album || '' },
+        removedFromZune: false,
+      });
+      await this._writePending(list);
+    }
+  }
+
+  /** Fixed songs still waiting to be updated on the Zune (files that still exist). */
+  async zunePending() {
+    return (await this._readPending()).filter(e => fsSync.existsSync(e.path));
+  }
+
+  /** removed: the old copy is off the Zune (resend even if no match is found later). */
+  async zuneMarkRemoved(paths) {
+    const set = new Set(paths);
+    const list = await this._readPending();
+    for (const e of list) if (set.has(e.path)) e.removedFromZune = true;
+    await this._writePending(list);
+  }
+
+  async zuneDone(paths) {
+    const set = new Set(paths);
+    await this._writePending((await this._readPending()).filter(e => !set.has(e.path)));
   }
 
   // ---- Undo -----------------------------------------------------------------
@@ -302,6 +372,11 @@ class SongFixer {
         failed.push({ path: e.path, error: err.message });
       }
     }
+    // Restored songs match the Zune's copy again, unless that copy was already replaced
+    const pending = await this._readPending();
+    const restoredSet = new Set(restored);
+    await this._writePending(pending.filter(e => !restoredSet.has(e.path) || e.removedFromZune));
+
     // Keep the record if anything couldn't be restored, so it can be retried
     if (failed.length === 0) await fs.unlink(file).catch(() => {});
     this._batches.delete(path.basename(file, '.json'));

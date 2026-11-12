@@ -419,7 +419,7 @@ class SongFixerView {
 
     this.running = false;
     this._setStatus(`${fixedPaths.length} song${fixedPaths.length === 1 ? '' : 's'} fixed${failed ? `, ${failed} couldn’t be saved` : ''}. ` +
-      (fixedPaths.length ? 'sync them to your zune to update it there too.' : ''));
+      (fixedPaths.length ? 'to put the fixes on your zune, connect it and press \u201cupdate fixed songs\u201d at the top of its music list (not \u201csync music\u201d, which sends everything).' : ''));
     try { this.undoInfo = await window.electronAPI.songFixerUndoInfo(); } catch {}
     this._refreshActions();
     if (fixedPaths.length) await this._reloadTracks(fixedPaths);

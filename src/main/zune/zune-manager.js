@@ -484,6 +484,7 @@ class ZuneManager extends EventEmitter {
           storage: this.storageInfo,
         });
       }
+      return { succeeded: [...succeeded], failed, cancelled: this.cancelRequested };
     } catch (err) {
       this.emit('transfer-progress', {
         state: 'error',
@@ -491,6 +492,7 @@ class ZuneManager extends EventEmitter {
         completedFiles,
         totalFiles,
       });
+      return { succeeded: [...succeeded], failed, error: err.message };
     } finally {
       this.transferring = false;
       for (const tmp of tempFiles) {
@@ -1501,6 +1503,8 @@ class ZuneManager extends EventEmitter {
     if (!this.connected) {
       throw new Error('No Zune device connected');
     }
+    if (this.transferring) throw new Error('Zune is busy receiving songs \u2014 wait for that to finish');
+    this._assertNotPulling();
 
     let deleted = 0;
     let failed = 0;
@@ -1508,7 +1512,19 @@ class ZuneManager extends EventEmitter {
 
     for (const handle of handles) {
       try {
-        await this.mtp.deleteObject(handle);
+        // Browse handles may be ZMDB atom IDs; delete the real MTP object
+        const realHandle = await this.resolveHandle(handle);
+        try {
+          await this.mtp.deleteObject(realHandle);
+        } catch (err) {
+          // The atom ID may not be this track's MTP handle even though the probe
+          // said they usually match; look the file up before calling it gone.
+          if (!/InvalidObjectHandle/.test(err.message) || this.zmdbHandlesValid !== true || !this._zmdbEntries) throw err;
+          if (!this._handleCache) await this._buildHandleCache();
+          const alt = this._handleCache.get(handle);
+          if (alt == null || alt === realHandle) throw err;
+          await this.mtp.deleteObject(alt);
+        }
         deleted++;
       } catch (err) {
         // InvalidObjectHandle means the item is already gone — count as deleted

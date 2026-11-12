@@ -444,8 +444,8 @@ ipcMain.handle('zune-device-info', async () => {
 
 ipcMain.handle('zune-send-files', async (event, filePaths) => {
   try {
-    await zuneManager.sendFiles(filePaths);
-    return { success: true };
+    const result = await zuneManager.sendFiles(filePaths);
+    return { success: true, ...(result || {}) };
   } catch (error) {
     return { success: false, error: error.message };
   }
@@ -1095,6 +1095,13 @@ ipcMain.handle('song-fixer-apply', async (event, batchId, filePath, tags, opts) 
 });
 
 ipcMain.handle('song-fixer-undo-info', async () => songFixer.undoInfo());
+ipcMain.handle('song-fixer-zune-pending', async () => songFixer.zunePending());
+ipcMain.handle('song-fixer-zune-removed', async (event, paths) => {
+  if (Array.isArray(paths)) await songFixer.zuneMarkRemoved(paths.filter(p => typeof p === 'string'));
+});
+ipcMain.handle('song-fixer-zune-done', async (event, paths) => {
+  if (Array.isArray(paths)) await songFixer.zuneDone(paths.filter(p => typeof p === 'string'));
+});
 
 ipcMain.handle('song-fixer-undo', async () => {
   try {

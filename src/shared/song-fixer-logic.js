@@ -226,7 +226,54 @@ function buildTagArgs(input, output, tags, { coverPath = null, ext = '.mp3' } = 
   return args;
 }
 
+// ---------------------------------------------------------------------------
+// Updating fixed songs on the Zune
+// ---------------------------------------------------------------------------
+
+/**
+ * Work out what to do on the Zune for each fixed song.
+ * @param pending  [{ path, fileName, before:{title,artist}, removedFromZune }]
+ * @param device   browse items: [{ handle, filename, title, artist }]
+ * @param current  Map path -> current tags ({ title, artist, album })
+ * @returns {{ replace:[{path, handle}], resend:string[], upToDate:string[], notOnZune:string[], needsRescan:string[] }}
+ */
+function planZuneUpdate(pending, device, current) {
+  const base = (f) => String(f || '').split(/[/\\]/).pop().toLowerCase();
+  const key = (t, a) => `${norm(t)}|${norm(a)}`;
+  const full = (x) => `${norm(x.title)}|${norm(x.artist)}|${norm(x.album)}`;
+  const byName = new Map();
+  const byTags = new Map();
+  const add = (map, k, item) => { if (!map.has(k)) map.set(k, []); map.get(k).push(item); };
+  for (const d of device) {
+    if (d.filename) add(byName, base(d.filename), d);
+    if (d.title) add(byTags, key(d.title, d.artist), d);
+  }
+  const used = new Set();
+  const take = (list) => (list || []).find(d => !used.has(d));
+
+  const plan = { replace: [], resend: [], upToDate: [], notOnZune: [], needsRescan: [] };
+  for (const e of pending) {
+    if (e.removedFromZune) { plan.resend.push(e.path); continue; }
+    const now = current.get(e.path) || {};
+    // The old copy: same file name, or the tags the song had before it was fixed
+    let old = take(byName.get(base(e.fileName)));
+    if (!old && e.before?.title) old = take(byTags.get(key(e.before.title, e.before.artist)));
+    if (old) {
+      used.add(old);
+      if (!old.handle) plan.needsRescan.push(e.path);
+      else if (now.title && full(old) === full(now)) plan.upToDate.push(e.path);
+      else plan.replace.push({ path: e.path, handle: old.handle });
+      continue;
+    }
+    const fresh = now.title ? take((byTags.get(key(now.title, now.artist)) || []).filter(d => full(d) === full(now))) : null;
+    if (fresh) { used.add(fresh); plan.upToDate.push(e.path); continue; }
+    plan.notOnZune.push(e.path);
+  }
+  return plan;
+}
+
 const songFixerLogic = {
+  planZuneUpdate,
   suspectReasons,
   pickBestMatch,
   albumOptions,

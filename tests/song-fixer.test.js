@@ -46,3 +46,53 @@ test('song fixer fingerprints, rewrites tags and undoes', { skip: !haveFfmpeg &&
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('fixed songs are remembered for the Zune until updated, and undo forgets them', { skip: !haveFfmpeg && 'ffmpeg binary not installed' }, async () => {
+  const { SongFixer } = require('../src/main/song-fixer.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'songfixer-'));
+  try {
+    const mk = (name, title) => {
+      const p = path.join(dir, name);
+      execFileSync(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'sine=f=300:d=3',
+        '-c:a', 'libmp3lame', '-metadata', `title=${title}`, '-y', p]);
+      return p;
+    };
+    const a = mk('a.mp3', 'Old A');
+    const b = mk('b.mp3', 'Old B');
+    const sf = new SongFixer({ ffmpegPath, dataDir: dir });
+    await sf.apply('200', a, { title: 'New A' });
+    await sf.apply('200', a, { title: 'Newer A' }); // fixed twice: keep the oldest tags
+    await sf.apply('201', b, { title: 'New B' });
+
+    let pending = await sf.zunePending();
+    assert.deepEqual(pending.map(e => [e.fileName, e.before.title]), [['a.mp3', 'Old A'], ['b.mp3', 'Old B']]);
+
+    await sf.undoLast(); // undoes b
+    pending = await sf.zunePending();
+    assert.deepEqual(pending.map(e => e.fileName), ['a.mp3']);
+
+    await sf.zuneMarkRemoved([a]);
+    assert.equal((await sf.zunePending())[0].removedFromZune, true);
+    await sf.zuneDone([a]);
+    assert.deepEqual(await sf.zunePending(), []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('songs fixed before the Zune list existed are picked up from undo records', async () => {
+  const { SongFixer } = require('../src/main/song-fixer.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'songfixer-'));
+  try {
+    const song = path.join(dir, 'old.mp3');
+    fs.writeFileSync(song, 'x');
+    fs.mkdirSync(path.join(dir, 'song-fixer'));
+    fs.writeFileSync(path.join(dir, 'song-fixer', '1700.json'),
+      JSON.stringify([{ path: song, before: { title: 'Was', artist: 'Someone', album: 'DOPEHOOD.COM' }, addedCover: false }]));
+    const sf = new SongFixer({ ffmpegPath: 'unused', dataDir: dir });
+    const pending = await sf.zunePending();
+    assert.deepEqual(pending, [{ path: song, fileName: 'old.mp3', before: { title: 'Was', artist: 'Someone', album: 'DOPEHOOD.COM' }, removedFromZune: false }]);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
