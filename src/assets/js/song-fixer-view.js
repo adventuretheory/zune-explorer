@@ -435,7 +435,8 @@ class SongFixerView {
       c.appendChild(this.statusEl);
       return;
     }
-    const identical = all.filter(g => g.kind === 'identical');
+    // "Safe" = exact copies, or extra copies that only add junk tags to a clean song
+    const identical = all.filter(g => g.kind !== 'different');
     const different = all.filter(g => g.kind === 'different');
     const groups = this.dupeKind === 'identical' ? identical : different;
     const isTicked = (g, it) => this.dupeChoice.has(it.id) ? this.dupeChoice.get(it.id) : it.id !== g.keepId;
@@ -446,7 +447,7 @@ class SongFixerView {
     // Identical copies vs different versions
     const kinds = this._el('div', 'zune-diff-group-bar');
     for (const [kind, label, list] of [
-      ['identical', 'identical copies', identical],
+      ['identical', 'safe to delete', identical],
       ['different', 'different versions', different],
     ]) {
       const b = this._el('button', 'zune-diff-group-btn' + (this.dupeKind === kind ? ' active' : ''), `${label} (${extra(list)})`);
@@ -456,7 +457,7 @@ class SongFixerView {
     c.appendChild(kinds);
 
     c.appendChild(this._el('div', 'song-fixer-note', this.dupeKind === 'identical'
-      ? 'same song, same album, same file size and length — the extras are exact copies, so these are safe to delete without checking each one.'
+      ? 'exact copies (same album, size and length), and messy copies (same song and length, but with junk tags like ID codes or “unknown album”) of a song you have properly tagged. the clean copy is kept, so these are safe to delete without checking each one.'
       : 'same song but a different album or a different file (quality, length). the best copy is picked for you and its reasons are shown — worth a quick look before deleting.'));
 
     const bar = this._el('div', 'zune-diff-actions song-fixer-actions');
@@ -476,7 +477,8 @@ class SongFixerView {
     for (const g of groups.slice(0, this.limit)) {
       const head = this._el('div', 'zune-diff-group-header song-fixer-dupe-head');
       head.appendChild(this._el('span', 'zune-diff-group-name', `${g.title} — ${g.artist || '?'}`));
-      head.appendChild(this._el('span', 'zune-diff-group-meta', `${g.items.length} copies`));
+      const kindLabel = { identical: 'exact copies', messy: 'messy copies of a clean song' }[g.kind] || 'different versions';
+      head.appendChild(this._el('span', 'zune-diff-group-meta', `${g.items.length} copies · ${kindLabel}`));
       list.appendChild(head);
       for (const it of g.items) {
         const keep = it.id === g.keepId;

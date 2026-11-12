@@ -364,51 +364,115 @@ function scoreCopy(it, group) {
  * @returns [{ title, artist, kind, items, keepId }] with the keeper first; every
  *          item gets { score, good, bad, kbps }
  */
+function isJunkArtist(a) {
+  const v = clean(a);
+  return !v || PLACEHOLDER_RE.test(v) || GUID_RE.test(v) || URL_RE.test(v);
+}
+
+const GUID_ANY_RE = /\{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}?/gi;
+
+/**
+ * What song an item really is, for duplicate matching. A copy with no tags
+ * may carry its title as "{ID} - Title" or "Title - Artist"; pick the part
+ * that's a title other songs actually have.
+ */
+function dupeIdentity(it, knownTitles) {
+  let title = clean(it.title).replace(GUID_ANY_RE, ' ').replace(/\s+/g, ' ').trim();
+  let artist = isJunkArtist(it.artist) ? '' : clean(it.artist);
+  if (!artist && /\s-\s/.test(title)) {
+    const parts = title.split(/\s+-\s+/).map(x => x.trim()).filter(Boolean);
+    if (parts.length === 1) {
+      title = parts[0];
+    } else if (parts.length >= 2) {
+      const ti = parts.findIndex(x => knownTitles.has(norm(x)));
+      const t = ti === -1 ? parts.length - 1 : ti;
+      title = parts[t];
+      const rest = parts.filter((_, i) => i !== t);
+      artist = rest.length === 1 && !isJunkArtist(rest[0]) ? rest[0] : '';
+    }
+  }
+  title = title.replace(/^[\s\-–]+|[\s\-–]+$/g, '');
+  return { title, artist };
+}
+
 function findDuplicateGroups(items, { toleranceSec = 3 } = {}) {
-  const byKey = new Map();
+  // Titles of properly tagged songs, to read "{ID} - Title - Artist" names
+  const knownTitles = new Set();
   for (const it of items) {
-    const title = clean(it.title);
-    if (!title || PLACEHOLDER_RE.test(title) || GUID_RE.test(title)) continue;
-    const k = tagKey(title, it.artist);
-    if (!byKey.has(k)) byKey.set(k, []);
-    byKey.get(k).push(it);
+    const t = clean(it.title);
+    if (t && !isJunkArtist(it.artist) && !/\s-\s/.test(t)) knownTitles.add(norm(t));
+  }
+
+  const byTitle = new Map();
+  for (const it of items) {
+    const id = dupeIdentity(it, knownTitles);
+    if (!id.title || PLACEHOLDER_RE.test(id.title) || GUID_RE.test(id.title)) continue;
+    const k = norm(id.title);
+    if (!k) continue;
+    if (!byTitle.has(k)) byTitle.set(k, []);
+    byTitle.get(k).push({ it, artist: norm(id.artist) });
   }
 
   const groups = [];
-  for (const list of byKey.values()) {
+  for (const list of byTitle.values()) {
     if (list.length < 2) continue;
     // Split by length: a 3:30 album version and a 7:00 extended mix aren't duplicates.
     // Songs with unknown length go with the first cluster.
-    const known = list.filter(i => i.duration > 0).sort((a, b) => a.duration - b.duration);
-    const unknown = list.filter(i => !(i.duration > 0));
+    const known = list.filter(e => e.it.duration > 0).sort((a, b) => a.it.duration - b.it.duration);
+    const unknown = list.filter(e => !(e.it.duration > 0));
     const clusters = [];
-    for (const it of known) {
+    for (const e of known) {
       const last = clusters[clusters.length - 1];
-      if (last && it.duration - last[0].duration <= toleranceSec) last.push(it);
-      else clusters.push([it]);
+      if (last && e.it.duration - last[0].it.duration <= toleranceSec) last.push(e);
+      else clusters.push([e]);
     }
     if (clusters.length === 0) clusters.push([]);
     clusters[0].push(...unknown);
 
     for (const c of clusters) {
-      if (c.length < 2) continue;
-      const scored = c.map(it => ({ ...it, ...scoreCopy(it, c) }));
-      scored.sort((a, b) =>
-        b.score - a.score || b.kbps - a.kbps || (b.size || 0) - (a.size || 0) ||
-        String(a.where || '').length - String(b.where || '').length);
-      const keep = scored[0];
+      // Same artist = same song. Copies with no real artist join the one
+      // artist this title has; if several artists share the title, it's
+      // impossible to say whose song an untagged copy is, so leave it out.
+      const byArtist = new Map();
+      const noArtist = [];
+      for (const e of c) {
+        if (!e.artist) noArtist.push(e.it);
+        else {
+          if (!byArtist.has(e.artist)) byArtist.set(e.artist, []);
+          byArtist.get(e.artist).push(e.it);
+        }
+      }
+      let subgroups;
+      if (byArtist.size === 0) subgroups = [noArtist];
+      else if (byArtist.size === 1) subgroups = [[...byArtist.values()][0].concat(noArtist)];
+      else subgroups = [...byArtist.values()];
 
-      const sameAlbum = scored.every(i => norm(i.album) === norm(keep.album));
-      const sameFile = scored.every(i =>
-        Math.abs((i.size || 0) - (keep.size || 0)) <= Math.max(keep.size || 0, 1) * 0.02 &&
-        Math.abs((i.duration || 0) - (keep.duration || 0)) <= 1.5);
-      groups.push({
-        title: clean(keep.title),
-        artist: clean(keep.artist),
-        kind: sameAlbum && sameFile ? 'identical' : 'different',
-        items: scored,
-        keepId: keep.id,
-      });
+      for (const sub of subgroups) {
+        if (sub.length < 2) continue;
+        const scored = sub.map(it => ({ ...it, ...scoreCopy(it, sub) }));
+        scored.sort((a, b) =>
+          b.score - a.score || b.kbps - a.kbps || (b.size || 0) - (a.size || 0) ||
+          String(a.where || '').length - String(b.where || '').length);
+        const keep = scored[0];
+        const others = scored.slice(1);
+
+        const sameAlbum = scored.every(i => norm(i.album) === norm(keep.album));
+        const sameFile = scored.every(i =>
+          Math.abs((i.size || 0) - (keep.size || 0)) <= Math.max(keep.size || 0, 1) * 0.02 &&
+          Math.abs((i.duration || 0) - (keep.duration || 0)) <= 1.5);
+        // The extras only differ by having junk tags, and the keeper is clean
+        const messyCopies = !keep.bad.includes('messy tags') &&
+          others.every(i => i.bad.includes('messy tags') &&
+            (!(i.duration > 0) || !(keep.duration > 0) || Math.abs(i.duration - keep.duration) <= 2));
+
+        groups.push({
+          title: dupeIdentity(keep, knownTitles).title || clean(keep.title),
+          artist: dupeIdentity(keep, knownTitles).artist || clean(keep.artist),
+          kind: sameAlbum && sameFile ? 'identical' : messyCopies ? 'messy' : 'different',
+          items: scored,
+          keepId: keep.id,
+        });
+      }
     }
   }
   groups.sort((a, b) => a.title.localeCompare(b.title));

@@ -205,7 +205,7 @@ test('duplicate keeper prefers the original album, the Music folder and real fil
   assert.ok(notes.one.includes('looks like a copy'));
 
   assert.equal(byTitle.Song.keepId, 'hi');
-  assert.equal(byTitle.Song.kind, 'different');
+  assert.equal(byTitle.Song.kind, 'messy'); // the extra only adds junk tags and lower quality
   assert.ok(byTitle.Song.items[1].bad.some(b => /lower quality \(128 kbps\)/.test(b)));
 });
 
@@ -273,4 +273,42 @@ test('pickTitleSearchMatch needs the title and artist words in the messy title, 
   // Title words missing from what we have -> no match
   const other = L.titleSearchTerms({ title: 'DJ Sammy - Sunlight' }, '/m/x.mp3');
   assert.equal(L.pickTitleSearchMatch(mbHeaven, other, 230), null);
+});
+
+test('copies with junk artists are grouped with the clean song and marked messy', () => {
+  const G = '{09316835-3188-481c-a359-0f8d2a937ac8}';
+  const groups = L.findDuplicateGroups([
+    { id: 'clean', title: 'DJ Got Us Falling In Love', artist: 'Usher', album: 'Versus', duration: 221, size: 8.8e6, where: '/Music/Usher/DJ Got Us Falling In Love.mp3', hasArt: true },
+    // Copied off the Zune: ID artist, title from the file name
+    { id: 'zcopy', title: `${G} - DJ Got Us Falling In Love`, artist: 'Unknown Artist', album: 'Unknown Album', duration: 222, size: 8.9e6, where: `/Music/${G} - DJ Got Us Falling In Love.mp3` },
+    // Old download named "ID - Title - Artist"
+    { id: 'old', title: `${G} - DJ Got Us Falling In Love - Usher`, artist: G, album: 'DOPEHOOD.COM', duration: 221, size: 5e6, where: '/Downloads/x.mp3' },
+    // Same title, different real artist: a different song
+    { id: 'other', title: 'DJ Got Us Falling In Love', artist: 'Someone Else', album: 'Covers', duration: 221, size: 8e6, where: '/Music/o.mp3' },
+  ]);
+  // Two real artists share the title: the copy named "... - Usher" still joins
+  // Usher's song, but the copy with no artist at all can't be placed
+  assert.equal(groups.length, 1);
+  assert.deepEqual(groups[0].items.map(i => i.id).sort(), ['clean', 'old']);
+
+  const g2 = L.findDuplicateGroups([
+    { id: 'clean', title: 'DJ Got Us Falling In Love', artist: 'Usher', album: 'Versus', duration: 221, size: 8.8e6, where: '/Music/Usher/a.mp3', hasArt: true },
+    { id: 'zcopy', title: `${G} - DJ Got Us Falling In Love`, artist: 'Unknown Artist', album: 'Unknown Album', duration: 222, size: 8.9e6, where: `/Music/${G} - DJ Got Us Falling In Love.mp3` },
+    { id: 'old', title: `${G} - DJ Got Us Falling In Love - Usher`, artist: G, album: 'DOPEHOOD.COM', duration: 221, size: 5e6, where: '/Downloads/x.mp3' },
+  ]);
+  assert.equal(g2.length, 1);
+  assert.equal(g2[0].keepId, 'clean');
+  assert.equal(g2[0].kind, 'messy');
+  assert.deepEqual(g2[0].items.map(i => i.id).sort(), ['clean', 'old', 'zcopy']);
+  assert.equal(g2[0].title, 'DJ Got Us Falling In Love');
+});
+
+test('a messy copy of a different length is not grouped, and two clean versions stay "different"', () => {
+  const groups = L.findDuplicateGroups([
+    { id: 'a', title: 'Heaven', artist: 'DJ Sammy', album: 'Heaven', duration: 230, size: 9e6, where: '/Music/a.mp3' },
+    { id: 'b', title: 'Heaven', artist: 'Unknown Artist', album: '', duration: 420, size: 9e6, where: '/Music/b.mp3' }, // extended mix
+    { id: 'c', title: 'Clocks', artist: 'Coldplay', album: 'A Rush of Blood to the Head', duration: 307, size: 12e6, where: '/Music/c.mp3' },
+    { id: 'd', title: 'Clocks', artist: 'Coldplay', album: 'Live 2003', duration: 307, size: 11e6, where: '/Music/d.mp3' },
+  ]);
+  assert.deepEqual(groups.map(g => [g.title, g.kind, g.items.length]), [['Clocks', 'different', 2]]);
 });
