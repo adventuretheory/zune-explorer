@@ -97,7 +97,10 @@ class ZuneSyncPanel {
         });
 
         document.getElementById('zune-sync-music').addEventListener('click', () => {
-            const paths = this.explorer.categorizedFiles.music.map(f => f.path);
+            // Extensionless files are only music if they were readable as audio
+            const paths = this.explorer.categorizedFiles.music
+                .filter(f => f.extension || this.explorer.musicLibrary.tracks.has(f.path))
+                .map(f => f.path);
             if (paths.length > 0) this._sendFiles(paths);
         });
         document.getElementById('zune-sync-videos').addEventListener('click', () => {
@@ -2039,6 +2042,7 @@ class ZuneSyncPanel {
         const deviceByHandle = new Map(deviceItems.map(i => [i.handle, i]));
         const failedHandles = [];
         let disconnected = false;
+        let stopReason = 'zune disconnected';
 
         // The first copy may need to scan the whole Zune to locate files.
         // Show that, so a long scan doesn't look like a freeze.
@@ -2088,6 +2092,12 @@ class ZuneSyncPanel {
                         // Retrying can't help once the device is gone, or when it
                         // simply doesn't have the file.
                         if (/disconnected|No Zune device connected/i.test(err.message)) { disconnected = true; break; }
+                        if (/busy/i.test(err.message)) {
+                            // Another job (e.g. sending songs) has the Zune; stop and keep the rest selected
+                            disconnected = true;
+                            stopReason = 'zune busy \u2014 try again when the other transfer finishes';
+                            break;
+                        }
                         // Each stall already costs a 20s wait plus a reconnect; skip, don't retry.
                         if (/Could not locate|stopped responding/i.test(err.message)) break;
                         if (attempt < MAX_RETRIES) {
@@ -2117,7 +2127,7 @@ class ZuneSyncPanel {
         if (disconnected) failedCount = failedHandles.length;
 
         if (failedCount > 0) {
-            pullBtn.textContent = pulled + ' copied, ' + failedCount + (disconnected ? ' not copied (zune disconnected)' : ' failed');
+            pullBtn.textContent = pulled + ' copied, ' + failedCount + (disconnected ? ' not copied (' + stopReason + ')' : ' failed');
             pullBtn.style.color = '#ff6900';
             this.explorer.showToast?.(failedCount + ' file(s) not copied: ' + failedFiles.slice(0, 3).join(', ') + (failedFiles.length > 3 ? '\u2026' : '') + ' \u2014 they are still selected, press copy to retry');
         } else {
@@ -3360,6 +3370,9 @@ class ZuneExplorer {
             for (const file of result.files) {
                 if (file.name.startsWith('.')) continue;
                 if (file.isDirectory) {
+                    // App libraries (Apple Music's "Music Library.musiclibrary", Photos,
+                    // etc.) are packages of internal database files, not media folders.
+                    if (/\.(musiclibrary|photoslibrary|tvlibrary|imovielibrary|photolibrary|aplibrary|migratedphotolibrary|app|bundle|framework)$/i.test(file.name)) continue;
                     await this.scanDirectoryRecursive(file.path, category);
                 } else if (extensions.includes(file.extension)) {
                     if (!this.categorizedFiles[category].some(f => f.path === file.path)) {
