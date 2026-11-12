@@ -32,6 +32,8 @@ class ZuneManager extends EventEmitter {
     this.storageInfo = null;
     this.storageId = null;
     this.transferring = false;
+    this._pullsInFlight = 0; // copies from the Zune currently using the USB connection
+    this._recovering = false;
     this.cancelRequested = false;
     this.currentStatus = null;
     this.productId = null;
@@ -262,6 +264,7 @@ class ZuneManager extends EventEmitter {
     if (this.transferring) {
       throw new Error('A transfer is already in progress');
     }
+    this._assertNotPulling();
 
     this.transferring = true;
     this.cancelRequested = false;
@@ -1445,6 +1448,7 @@ class ZuneManager extends EventEmitter {
   async sendPodcastEpisodes(episodes) {
     if (!this.connected) throw new Error('No Zune device connected');
     if (this.transferring) throw new Error('A transfer is already in progress');
+    this._assertNotPulling();
 
     this.transferring = true;
     this.cancelRequested = false;
@@ -1535,6 +1539,27 @@ class ZuneManager extends EventEmitter {
     if (!this.connected) {
       throw new Error('No Zune device connected');
     }
+    // The Zune handles one conversation at a time; interleaving a copy with a
+    // send garbles both and stalls the device.
+    if (this.transferring) {
+      throw new Error('Zune is busy receiving songs \u2014 wait for that to finish, then copy again');
+    }
+    if (this._recovering) throw new Error('Zune is busy reconnecting');
+    this._pullsInFlight++;
+    try {
+      return await this._getFileUnlocked(handle);
+    } finally {
+      this._pullsInFlight--;
+    }
+  }
+
+  _assertNotPulling() {
+    if (this._pullsInFlight > 0 || this._recovering) {
+      throw new Error('Zune is busy copying songs to the computer \u2014 wait for that to finish');
+    }
+  }
+
+  async _getFileUnlocked(handle) {
     // If ZMDB handles aren't valid MTP handles, resolve first
     const realHandle = await this.resolveHandle(handle);
     try {
@@ -1589,16 +1614,27 @@ class ZuneManager extends EventEmitter {
     if (!this.connected) throw new Error('Zune was disconnected');
     console.log('ZuneManager: device stopped responding — reopening session');
     this.emit('pull-progress', { phase: 'recovering' });
+    this._recovering = true;
+    const withDeadline = (p, ms, what) => {
+      let timer;
+      return Promise.race([
+        p,
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} timed out`)), ms); }),
+      ]).finally(() => clearTimeout(timer));
+    };
     try {
       await this.transport.close();
       await new Promise(r => setTimeout(r, 1000));
-      await this.transport.open(ZUNE_VENDOR_ID, this.productId);
+      await withDeadline(this.transport.open(ZUNE_VENDOR_ID, this.productId), 10000, 'reopening USB');
+      // Every step gets a USB-level time limit so a confused device can't hang us
+      this.transport.setTransferTimeout(10000);
       this.mtp = new MtpProtocol(this.transport);
       await this.mtp.openSession(1);
       this.auth = new MtpzAuth(this.mtp);
       await this.auth.authenticate();
       const storageIDs = await this.mtp.getStorageIDs();
       this.storageId = storageIDs[0];
+      this.transport.setTransferTimeout(0);
       console.log('ZuneManager: session recovered');
     } catch (err) {
       console.error('ZuneManager: session recovery failed:', err.message);
@@ -1606,6 +1642,8 @@ class ZuneManager extends EventEmitter {
       this.currentStatus = { state: 'disconnected' };
       this.emit('status', this.currentStatus);
       throw new Error('Zune disconnected — unplug it and plug it back in');
+    } finally {
+      this._recovering = false;
     }
   }
 
