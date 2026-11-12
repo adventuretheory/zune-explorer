@@ -140,3 +140,40 @@ test('planZuneUpdate replaces a copy whose title matches but album is still old'
   const plan = L.planZuneUpdate(pending, device, new Map([['/m/s.mp3', { title: 'Song', artist: 'A', album: 'Real Album' }]]));
   assert.deepEqual(plan.replace, [{ path: '/m/s.mp3', handle: 5 }]);
 });
+
+test('findDuplicateGroups groups same title+artist with similar length and suggests a keeper', () => {
+  const groups = L.findDuplicateGroups([
+    { id: 'a', title: 'Heaven', artist: 'DJ Sammy', album: 'DOPEHOOD.COM', duration: 230, size: 9e6 },
+    { id: 'b', title: 'heaven', artist: 'dj sammy', album: 'Heaven', duration: 231.5, size: 5e6, hasArt: true },
+    { id: 'c', title: 'Heaven', artist: 'DJ Sammy', album: 'Heaven (Remixes)', duration: 420, size: 1e7 }, // extended mix
+    { id: 'd', title: 'Heaven', artist: 'Someone Else', album: 'X', duration: 230 },
+    { id: 'e', title: 'Unknown', artist: 'A', duration: 100 },
+    { id: 'f', title: 'Unknown', artist: 'A', duration: 100 },
+    { id: 'g', title: 'Clocks', artist: 'Coldplay', album: 'A Rush', duration: 0, size: 1 },
+    { id: 'h', title: 'Clocks', artist: 'Coldplay', album: '', duration: 307, size: 2 },
+  ]);
+  assert.deepEqual(groups.map(g => [g.title, g.items.map(i => i.id), g.keepId]), [
+    ['Clocks', ['g', 'h'], 'g'],      // unknown length joins; real album wins over size
+    ['heaven', ['b', 'a'], 'b'],      // named after the keeper; remix (7 min) and other artist left out; real album wins
+  ]);
+});
+
+test('planZuneUpdate removes deleted songs from the Zune unless another copy stays', () => {
+  const pending = [
+    { path: '/m/junk.mp3', fileName: 'junk.mp3', before: { title: 'Junk', artist: 'X' }, action: 'delete' },
+    { path: '/m/dup.mp3', fileName: 'dup.mp3', before: { title: 'Song', artist: 'Y' }, action: 'delete' },
+    { path: '/m/gone.mp3', fileName: 'gone.mp3', before: { title: 'G', artist: 'G' }, action: 'delete', removedFromZune: true },
+    { path: '/m/never.mp3', fileName: 'never.mp3', before: { title: 'Never', artist: 'Z' }, action: 'delete' },
+  ];
+  const device = [
+    { handle: 7, filename: 'junk.mp3', title: 'Junk', artist: 'X' },
+    { handle: 8, filename: 'dup.mp3', title: 'Song', artist: 'Y' },
+  ];
+  const plan = L.planZuneUpdate(pending, device, new Map(), { libraryKeys: new Set([L.tagKey('Song', 'Y')]) });
+  assert.deepEqual(plan.remove, [{ path: '/m/junk.mp3', handle: 7 }]);
+  assert.deepEqual(plan.kept, ['/m/dup.mp3']);
+  assert.deepEqual(plan.upToDate, ['/m/gone.mp3']);
+  assert.deepEqual(plan.notOnZune, ['/m/never.mp3']);
+  assert.deepEqual(plan.replace, []);
+  assert.deepEqual(plan.resend, []);
+});

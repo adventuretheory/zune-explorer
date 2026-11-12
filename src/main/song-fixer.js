@@ -24,8 +24,9 @@ class SongFixer {
    * @param {string} opts.dataDir   where undo records are kept
    * @param {(url:string)=>Promise<{data:Buffer, contentType:string}>} [opts.fetchBinary]
    */
-  constructor({ ffmpegPath, dataDir, fetchBinary }) {
+  constructor({ ffmpegPath, dataDir, fetchBinary, trashItem }) {
     this.ffmpegPath = ffmpegPath;
+    this.trashItem = trashItem; // moves a file to the system Trash (Electron shell.trashItem)
     this.undoDir = path.join(dataDir, 'song-fixer');
     this.fetchBinary = fetchBinary;
     this._chromaprint = null;
@@ -311,9 +312,52 @@ class SongFixer {
     }
   }
 
-  /** Fixed songs still waiting to be updated on the Zune (files that still exist). */
+  /**
+   * Songs waiting for the Zune: fixed files that still exist, and deleted
+   * files whose Zune copy should be removed.
+   */
   async zunePending() {
-    return (await this._readPending()).filter(e => fsSync.existsSync(e.path));
+    return (await this._readPending()).filter(e => e.action === 'delete' || fsSync.existsSync(e.path));
+  }
+
+  /**
+   * Move songs to the Trash. With removeFromZune, remember each one (and its
+   * tags) so "update zune" can take its copy off the device too.
+   */
+  async trash(paths, { removeFromZune = false } = {}) {
+    if (!this.trashItem) throw new Error('Trash is not available');
+    const trashed = [];
+    const failed = [];
+    const list = removeFromZune ? await this._readPending() : null;
+    for (const p of paths) {
+      try {
+        let tags = null;
+        if (removeFromZune) {
+          try { tags = await this.readTags(p); } catch { tags = {}; }
+        }
+        await this.trashItem(p);
+        trashed.push(p);
+        if (list) {
+          const existing = list.find(e => e.path === p);
+          if (existing) {
+            // A fixed song that's now deleted: its Zune copy still has the old tags
+            existing.action = 'delete';
+          } else {
+            list.push({
+              path: p,
+              fileName: path.basename(p),
+              before: { title: tags.title || '', artist: tags.artist || '', album: tags.album || '' },
+              removedFromZune: false,
+              action: 'delete',
+            });
+          }
+        }
+      } catch (err) {
+        failed.push({ path: p, error: err.message });
+      }
+    }
+    if (list) await this._writePending(list);
+    return { trashed, failed };
   }
 
   /** removed: the old copy is off the Zune (resend even if no match is found later). */

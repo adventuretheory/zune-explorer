@@ -96,3 +96,30 @@ test('songs fixed before the Zune list existed are picked up from undo records',
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('trash moves files away and queues Zune removal only when asked', async () => {
+  const { SongFixer } = require('../src/main/song-fixer.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'songfixer-'));
+  try {
+    const trashDir = path.join(dir, 'Trash');
+    fs.mkdirSync(trashDir);
+    const a = path.join(dir, 'a.mp3');
+    const b = path.join(dir, 'b.mp3');
+    fs.writeFileSync(a, 'not really audio');
+    fs.writeFileSync(b, 'not really audio');
+    const sf = new SongFixer({
+      ffmpegPath: 'unused', dataDir: dir,
+      trashItem: async (p) => fs.renameSync(p, path.join(trashDir, path.basename(p))),
+    });
+    const r1 = await sf.trash([a], { removeFromZune: true });
+    assert.deepEqual(r1.trashed, [a]);
+    const r2 = await sf.trash([b, path.join(dir, 'missing.mp3')], { removeFromZune: false });
+    assert.deepEqual(r2.trashed, [b]);
+    assert.equal(r2.failed.length, 1);
+    assert.deepEqual(fs.readdirSync(trashDir).sort(), ['a.mp3', 'b.mp3']);
+    const pending = await sf.zunePending();
+    assert.deepEqual(pending.map(e => [e.fileName, e.action]), [['a.mp3', 'delete']]);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

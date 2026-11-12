@@ -106,6 +106,7 @@ app.whenReady().then(async () => {
     ffmpegPath,
     dataDir: app.getPath('userData'),
     fetchBinary: musicbrainz.fetchUnlimited,
+    trashItem: (p) => shell.trashItem(p),
   });
   artistImages = new ArtistImages(app.getPath('userData'), {
     searchArtists: musicbrainz.searchArtists,
@@ -1096,6 +1097,16 @@ ipcMain.handle('song-fixer-apply', async (event, batchId, filePath, tags, opts) 
 
 ipcMain.handle('song-fixer-undo-info', async () => songFixer.undoInfo());
 ipcMain.handle('song-fixer-zune-pending', async () => songFixer.zunePending());
+ipcMain.handle('song-fixer-trash', async (event, paths, opts) => {
+  try {
+    if (!Array.isArray(paths)) throw new Error('Bad request');
+    const ok = paths.filter(p => typeof p === 'string' && isAllowedPath(p));
+    const result = await songFixer.trash(ok, { removeFromZune: !!opts?.removeFromZune });
+    return { success: true, ...result };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
 ipcMain.handle('song-fixer-zune-removed', async (event, paths) => {
   if (Array.isArray(paths)) await songFixer.zuneMarkRemoved(paths.filter(p => typeof p === 'string'));
 });

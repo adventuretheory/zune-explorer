@@ -231,49 +231,132 @@ function buildTagArgs(input, output, tags, { coverPath = null, ext = '.mp3' } = 
 // ---------------------------------------------------------------------------
 
 /**
- * Work out what to do on the Zune for each fixed song.
- * @param pending  [{ path, fileName, before:{title,artist}, removedFromZune }]
- * @param device   browse items: [{ handle, filename, title, artist }]
+ * Work out what to do on the Zune for each fixed or deleted song.
+ * @param pending  [{ path, fileName, before:{title,artist}, removedFromZune, action? }]
+ *                 action 'delete' = the file was deleted; take its copy off the Zune
+ * @param device   browse items: [{ handle, filename, title, artist, album }]
  * @param current  Map path -> current tags ({ title, artist, album })
- * @returns {{ replace:[{path, handle}], resend:string[], upToDate:string[], notOnZune:string[], needsRescan:string[] }}
+ * @param opts.libraryKeys  Set of "title|artist" keys (see tagKey) for songs still
+ *                 in the library. A deleted song's Zune copy is kept when another
+ *                 copy of it stays on the computer (deleting a duplicate).
+ * @returns {{ replace, remove, resend, upToDate, kept, notOnZune, needsRescan }}
  */
-function planZuneUpdate(pending, device, current) {
+function planZuneUpdate(pending, device, current, { libraryKeys = new Set() } = {}) {
   const base = (f) => String(f || '').split(/[/\\]/).pop().toLowerCase();
-  const key = (t, a) => `${norm(t)}|${norm(a)}`;
   const full = (x) => `${norm(x.title)}|${norm(x.artist)}|${norm(x.album)}`;
   const byName = new Map();
   const byTags = new Map();
   const add = (map, k, item) => { if (!map.has(k)) map.set(k, []); map.get(k).push(item); };
   for (const d of device) {
     if (d.filename) add(byName, base(d.filename), d);
-    if (d.title) add(byTags, key(d.title, d.artist), d);
+    if (d.title) add(byTags, tagKey(d.title, d.artist), d);
   }
   const used = new Set();
   const take = (list) => (list || []).find(d => !used.has(d));
+  const findOld = (e) => {
+    let old = take(byName.get(base(e.fileName)));
+    if (!old && e.before?.title) old = take(byTags.get(tagKey(e.before.title, e.before.artist)));
+    if (old) used.add(old);
+    return old;
+  };
 
-  const plan = { replace: [], resend: [], upToDate: [], notOnZune: [], needsRescan: [] };
+  const plan = { replace: [], remove: [], resend: [], upToDate: [], kept: [], notOnZune: [], needsRescan: [] };
   for (const e of pending) {
+    if (e.action === 'delete') {
+      if (e.removedFromZune) { plan.upToDate.push(e.path); continue; }
+      if (e.before?.title && libraryKeys.has(tagKey(e.before.title, e.before.artist))) { plan.kept.push(e.path); continue; }
+      const old = findOld(e);
+      if (!old) plan.notOnZune.push(e.path);
+      else if (!old.handle) plan.needsRescan.push(e.path);
+      else plan.remove.push({ path: e.path, handle: old.handle });
+      continue;
+    }
+
     if (e.removedFromZune) { plan.resend.push(e.path); continue; }
     const now = current.get(e.path) || {};
     // The old copy: same file name, or the tags the song had before it was fixed
-    let old = take(byName.get(base(e.fileName)));
-    if (!old && e.before?.title) old = take(byTags.get(key(e.before.title, e.before.artist)));
+    const old = findOld(e);
     if (old) {
-      used.add(old);
       if (!old.handle) plan.needsRescan.push(e.path);
       else if (now.title && full(old) === full(now)) plan.upToDate.push(e.path);
       else plan.replace.push({ path: e.path, handle: old.handle });
       continue;
     }
-    const fresh = now.title ? take((byTags.get(key(now.title, now.artist)) || []).filter(d => full(d) === full(now))) : null;
+    const fresh = now.title ? take((byTags.get(tagKey(now.title, now.artist)) || []).filter(d => full(d) === full(now))) : null;
     if (fresh) { used.add(fresh); plan.upToDate.push(e.path); continue; }
     plan.notOnZune.push(e.path);
   }
   return plan;
 }
 
+function tagKey(title, artist) {
+  return `${norm(title)}|${norm(artist)}`;
+}
+
+// ---------------------------------------------------------------------------
+// Duplicates
+// ---------------------------------------------------------------------------
+
+/**
+ * Group copies of the same song: same title and artist (ignoring case and
+ * punctuation) and lengths within a few seconds. Songs without a real title
+ * are skipped — there's nothing reliable to compare.
+ * @param items [{ id, title, artist, album, duration (seconds), size, hasArt }]
+ * @returns [{ title, artist, items, keepId }] with the suggested keeper first
+ */
+function findDuplicateGroups(items, { toleranceSec = 3 } = {}) {
+  const byKey = new Map();
+  for (const it of items) {
+    const title = clean(it.title);
+    if (!title || PLACEHOLDER_RE.test(title) || GUID_RE.test(title)) continue;
+    const k = tagKey(title, it.artist);
+    if (!byKey.has(k)) byKey.set(k, []);
+    byKey.get(k).push(it);
+  }
+
+  const albumIsReal = (a) => {
+    const v = clean(a);
+    return !!v && !PLACEHOLDER_RE.test(v) && !GUID_RE.test(v) && !URL_RE.test(v);
+  };
+  const rank = (it) => [albumIsReal(it.album) ? 1 : 0, it.hasArt ? 1 : 0, it.size || 0];
+  const better = (a, b) => {
+    const ra = rank(a), rb = rank(b);
+    for (let i = 0; i < ra.length; i++) if (ra[i] !== rb[i]) return ra[i] > rb[i];
+    return false;
+  };
+
+  const groups = [];
+  for (const list of byKey.values()) {
+    if (list.length < 2) continue;
+    // Split by length: a 3:30 album version and a 7:00 extended mix aren't duplicates.
+    // Songs with unknown length go with the first cluster.
+    const known = list.filter(i => i.duration > 0).sort((a, b) => a.duration - b.duration);
+    const unknown = list.filter(i => !(i.duration > 0));
+    const clusters = [];
+    for (const it of known) {
+      const last = clusters[clusters.length - 1];
+      if (last && it.duration - last[0].duration <= toleranceSec) last.push(it);
+      else clusters.push([it]);
+    }
+    if (clusters.length === 0) clusters.push([]);
+    clusters[0].push(...unknown);
+
+    for (const c of clusters) {
+      if (c.length < 2) continue;
+      let keep = c[0];
+      for (const it of c) if (better(it, keep)) keep = it;
+      const ordered = [keep, ...c.filter(i => i !== keep)];
+      groups.push({ title: clean(keep.title), artist: clean(keep.artist), items: ordered, keepId: keep.id });
+    }
+  }
+  groups.sort((a, b) => a.title.localeCompare(b.title));
+  return groups;
+}
+
 const songFixerLogic = {
   planZuneUpdate,
+  findDuplicateGroups,
+  tagKey,
   suspectReasons,
   pickBestMatch,
   albumOptions,

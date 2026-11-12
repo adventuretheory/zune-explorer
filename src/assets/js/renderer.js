@@ -1465,8 +1465,8 @@ class ZuneSyncPanel {
         }
         this.fixedPending = pending;
         btn.style.display = pending.length ? '' : 'none';
-        btn.textContent = `update ${pending.length} fixed song${pending.length === 1 ? '' : 's'}`;
-        btn.title = 'replace the old copies on your zune with the songs you fixed';
+        btn.textContent = `update zune (${pending.length} fixed/deleted song${pending.length === 1 ? '' : 's'})`;
+        btn.title = 'replace old copies of songs you fixed, and remove songs you deleted';
         btn.disabled = false;
     }
 
@@ -1477,27 +1477,32 @@ class ZuneSyncPanel {
         const pending = await window.electronAPI.songFixerZunePending();
         const current = new Map();
         for (const e of pending) current.set(e.path, this.explorer.musicLibrary.tracks.get(e.path) || {});
-        const plan = logic.planZuneUpdate(pending, this.browseData.music || [], current);
+        // Songs still on the computer: a deleted duplicate's Zune copy stays
+        // if another copy of it is still in the library.
+        const libraryKeys = new Set();
+        for (const t of this.explorer.musicLibrary.tracks.values()) libraryKeys.add(logic.tagKey(t.title, t.artist));
+        const plan = logic.planZuneUpdate(pending, this.browseData.music || [], current, { libraryKeys });
 
         if (plan.needsRescan.length) {
             this.explorer.showToast?.('the zune list is out of date \u2014 press rescan, then update again');
             return;
         }
-        const count = plan.replace.length + plan.resend.length;
+        const count = plan.replace.length + plan.resend.length + plan.remove.length;
+        const finished = [...plan.upToDate, ...plan.notOnZune, ...plan.kept];
 
         // First click: say what will happen, second click does it
         if (!btn.dataset.confirming) {
             if (count === 0) {
-                if (plan.upToDate.length) await window.electronAPI.songFixerZuneDone(plan.upToDate);
-                this.explorer.showToast?.(plan.notOnZune.length
-                    ? `none of your ${plan.notOnZune.length} fixed songs are on the zune \u2014 nothing to update`
-                    : 'your zune already has the fixed songs');
-                if (plan.notOnZune.length) await window.electronAPI.songFixerZuneDone(plan.notOnZune);
+                if (finished.length) await window.electronAPI.songFixerZuneDone(finished);
+                this.explorer.showToast?.('nothing to change on the zune \u2014 it already matches');
                 this._refreshFixedButton();
                 return;
             }
+            const parts = [];
+            if (plan.replace.length + plan.resend.length) parts.push(`replace ${plan.replace.length + plan.resend.length}`);
+            if (plan.remove.length) parts.push(`remove ${plan.remove.length}`);
             btn.dataset.confirming = '1';
-            btn.textContent = `replace ${count} song${count === 1 ? '' : 's'} on zune? click again`;
+            btn.textContent = `${parts.join(', ')} song${count === 1 ? '' : 's'} on zune? click again`;
             this._fixedConfirmTimer = setTimeout(() => { delete btn.dataset.confirming; this._refreshFixedButton(); }, 4000);
             return;
         }
@@ -1509,18 +1514,19 @@ class ZuneSyncPanel {
         btn.textContent = 'updating\u2026';
         let removedPaths = [];
         try {
-            // 1. Take the old copies off the Zune
-            if (plan.replace.length) {
-                const handles = plan.replace.map(r => r.handle);
-                const res = await window.electronAPI.zuneDeleteObjects(handles);
-                if (!res.success) throw new Error(res.error || 'could not remove the old copies');
+            // 1. Take old copies (of fixed songs) and deleted songs off the Zune
+            const targets = [...plan.replace, ...plan.remove];
+            let removedDeleted = [];
+            if (targets.length) {
+                const res = await this.deleteDeviceItems(targets.map(r => r.handle));
                 const failedHandles = new Set((res.errors || []).map(e => e.handle));
                 removedPaths = plan.replace.filter(r => !failedHandles.has(r.handle)).map(r => r.path);
+                removedDeleted = plan.remove.filter(r => !failedHandles.has(r.handle)).map(r => r.path);
                 // Remember they're gone, so an interrupted update still resends them
                 await window.electronAPI.songFixerZuneRemoved(removedPaths);
-                const gone = new Set(handles.filter(h => !failedHandles.has(h)));
-                this.browseData.music = (this.browseData.music || []).filter(i => !gone.has(i.handle));
-                if (res.storage) this._updateStorage(res.storage);
+                await window.electronAPI.songFixerZuneDone([...removedDeleted, ...finished]);
+            } else if (finished.length) {
+                await window.electronAPI.songFixerZuneDone(finished);
             }
 
             // 2. Send the fixed files
@@ -1528,12 +1534,15 @@ class ZuneSyncPanel {
             const sent = toSend.length ? await window.electronAPI.zuneSendFiles(toSend) : { success: true, succeeded: [] };
             if (!sent.success) throw new Error(sent.error || 'sending failed');
             const succeeded = sent.succeeded || [];
-            await window.electronAPI.songFixerZuneDone([...succeeded, ...plan.upToDate, ...plan.notOnZune]);
+            await window.electronAPI.songFixerZuneDone(succeeded);
 
             const missed = toSend.length - succeeded.length;
-            this.explorer.showToast?.(`${succeeded.length} fixed song${succeeded.length === 1 ? '' : 's'} updated on zune` +
-                (missed ? `, ${missed} not sent (press update again to retry)` : '') +
-                (plan.notOnZune.length ? ` \u00b7 ${plan.notOnZune.length} fixed songs weren\u2019t on the zune, so they were left off` : ''));
+            const notRemoved = plan.remove.length - removedDeleted.length;
+            const msg = [];
+            if (toSend.length) msg.push(`${succeeded.length} fixed song${succeeded.length === 1 ? '' : 's'} updated`);
+            if (plan.remove.length) msg.push(`${removedDeleted.length} deleted song${removedDeleted.length === 1 ? '' : 's'} removed`);
+            if (missed || notRemoved) msg.push(`${missed + notRemoved} didn\u2019t go through (press update again to retry)`);
+            this.explorer.showToast?.(msg.join(', '));
         } catch (err) {
             this.explorer.showToast?.('update failed: ' + err.message);
         } finally {
@@ -2323,6 +2332,39 @@ class ZuneSyncPanel {
     }
 
     // ---- Delete from device (diff view) ----
+    /**
+     * Delete items from the Zune and keep browse data, the device cache and the
+     * diff in step. Returns the IPC result ({ success, deleted, errors, ... }).
+     */
+    async deleteDeviceItems(handles) {
+        const result = await window.electronAPI.zuneDeleteObjects(handles);
+        if (!result.success) throw new Error(result.error || 'could not delete from the zune');
+        if (result.storage) this._updateStorage(result.storage);
+        if (this.browseData) {
+            const failed = new Set((result.errors || []).map(e => e.handle));
+            const gone = new Set(handles.filter(h => !failed.has(h)));
+            for (const cat of ['music', 'videos', 'pictures', 'podcasts']) {
+                this.browseData[cat] = (this.browseData[cat] || []).filter(item => !gone.has(item.handle));
+            }
+            if (this.deviceKey) {
+                await window.electronAPI.zuneCacheSave(this.deviceKey, {
+                    model: this.cachedData?.model || this.lastStatus?.model || 'Zune',
+                    scanDurationMs: this.cachedData?.scanDurationMs || 0,
+                    counts: this._cacheCounts(this.browseData),
+                    contents: this.browseData,
+                });
+            }
+            if (this.diffActive) {
+                this._computeDiff();
+                this._computeStorageBreakdown();
+                this._renderDiffSummary();
+                this._destroyDiffScroller();
+                this._renderDiffList();
+            }
+        }
+        return result;
+    }
+
     async _deleteFromDevice() {
         const deleteBtn = document.getElementById('zune-diff-delete-btn');
         const count = this.diffSelectedHandles.size;

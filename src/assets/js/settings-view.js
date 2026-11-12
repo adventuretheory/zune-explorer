@@ -133,7 +133,7 @@ class SettingsView {
       },
       {
         kind: 'nav',
-        label: 'fix song info',
+        label: 'fix songs & find duplicates',
         onClick: () => {
           if (!this.songFixer) this.songFixer = new window.SongFixerView(this.explorer);
           this.push({ title: 'fix songs', renderContent: (el) => this.songFixer.render(el) });

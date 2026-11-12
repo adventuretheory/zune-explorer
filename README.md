@@ -30,6 +30,7 @@ Built with Electron. Runs on macOS, Windows, and Linux.
 
 ### Metadata Enrichment
 - **Fix song info** (Settings → library) — finds songs with missing or junk tags (unknown album, GUID artists, website names), recognises them by their audio with [AcoustID](https://acoustid.org) and proposes the right title, artist, album, year and track number. Review every change before it's written; audio is never re-encoded, cover art is added when missing, and the last batch can be undone. Needs a free AcoustID API key
+- **Delete and de-duplicate** — songs that can't be fixed can be moved to the Trash from the same page (their Zune copies are removed by "update zune"). The duplicates tabs find songs that are in your library, or on the Zune, more than once (same title and artist, similar length), suggest which copy to keep, and delete the rest
 - **MusicBrainz lookup** — search for album metadata by artist and album name
 - **Cover Art Archive** integration — fetch album art from the open cover art database
 - **Preview before applying** — review matched results with thumbnails before committing
