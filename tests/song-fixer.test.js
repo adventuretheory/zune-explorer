@@ -118,7 +118,8 @@ test('trash moves files away and queues Zune removal only when asked', async () 
     assert.deepEqual(r1.trashed, [a]);
     const r2 = await sf.trash([b, path.join(dir, 'missing.mp3')], { removeFromZune: false });
     assert.deepEqual(r2.trashed, [b]);
-    assert.equal(r2.failed.length, 1);
+    assert.deepEqual(r2.missing, [path.join(dir, 'missing.mp3')]); // already gone: not an error
+    assert.equal(r2.failed.length, 0);
     assert.deepEqual(fs.readdirSync(trashDir).sort(), ['a.mp3', 'b.mp3']);
     const pending = await sf.zunePending();
     assert.deepEqual(pending.map(e => [e.fileName, e.action]), [['a.mp3', 'delete']]);
@@ -165,6 +166,37 @@ test('songs marked done still come back from the fix history for re-checking', a
     assert.equal(again[0].path, a);
     assert.equal(again[0].fromHistory, true);
     assert.equal(again[0].before.title, 'Old');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('trash reports files already gone, and never deletes a copy whose kept copy is unreachable', async () => {
+  const { SongFixer } = require('../src/main/song-fixer.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'songfixer-'));
+  try {
+    const trashDir = path.join(dir, 'Trash');
+    fs.mkdirSync(trashDir);
+    const keep = path.join(dir, 'keep.mp3');
+    const extra = path.join(dir, 'extra.mp3');
+    const extra2 = path.join(dir, 'extra2.mp3');
+    for (const f of [keep, extra, extra2]) fs.writeFileSync(f, 'x');
+    const sf = new SongFixer({
+      ffmpegPath: 'unused', dataDir: dir,
+      trashItem: async (p) => fs.renameSync(p, path.join(trashDir, path.basename(p))),
+    });
+    const r = await sf.trash([extra, extra2, path.join(dir, 'gone.mp3')], {
+      keepers: {
+        [extra]: [keep],                                   // kept copy is here: delete
+        [extra2]: ['/Volumes/Unplugged Drive/keep.mp3'],   // kept copy unreachable: don't
+      },
+    });
+    assert.deepEqual(r.trashed, [extra]);
+    assert.deepEqual(r.missing, [path.join(dir, 'gone.mp3')]);
+    assert.equal(r.failed.length, 1);
+    assert.equal(r.failed[0].path, extra2);
+    assert.equal(r.failed[0].keeperMissing, true);
+    assert.ok(fs.existsSync(extra2), 'the only reachable copy was not deleted');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

@@ -387,13 +387,31 @@ class SongFixer {
    * Move songs to the Trash. With removeFromZune, remember each one (and its
    * tags) so "update zune" can take its copy off the device too.
    */
-  async trash(paths, { removeFromZune = false } = {}) {
+  /**
+   * @param opts.keepers  path -> paths of the copies being kept instead (for
+   *   duplicates). A copy is only deleted if one of those is reachable now, so
+   *   a disconnected drive can't turn "delete the extra" into "delete the last".
+   * @returns {{ trashed, missing, failed }}  missing = already gone from disk
+   */
+  async trash(paths, { removeFromZune = false, keepers = {} } = {}) {
     if (!this.trashItem) throw new Error('Trash is not available');
     const trashed = [];
+    const missing = [];
     const failed = [];
     const list = removeFromZune ? await this._readPending() : null;
+    const exists = async (p) => { try { await fs.access(p); return true; } catch { return false; } };
     for (const p of paths) {
       try {
+        const kept = keepers[p];
+        if (Array.isArray(kept) && kept.length) {
+          let reachable = false;
+          for (const k of kept) if (await exists(k)) { reachable = true; break; }
+          if (!reachable) {
+            failed.push({ path: p, error: 'the copy being kept isn\u2019t available (is its drive connected?)', keeperMissing: true });
+            continue;
+          }
+        }
+        if (!(await exists(p))) { missing.push(p); continue; }
         let tags = null;
         if (removeFromZune) {
           try { tags = await this.readTags(p); } catch { tags = {}; }
@@ -416,11 +434,13 @@ class SongFixer {
           }
         }
       } catch (err) {
-        failed.push({ path: p, error: err.message });
+        // Gone between the check and the move: nothing left to delete
+        if (/doesn.t exist|no such file|ENOENT/i.test(err.message)) missing.push(p);
+        else failed.push({ path: p, error: err.message });
       }
     }
     if (list) await this._writePending(list);
-    return { trashed, failed };
+    return { trashed, missing, failed };
   }
 
   /** removed: the old copy is off the Zune (resend even if no match is found later). */

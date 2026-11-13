@@ -468,7 +468,16 @@ class SongFixerView {
     del.disabled = ticked.length === 0 || this.running;
     this._confirmButton(del,
       () => onZune ? `delete ${ticked.length} from the zune? click again` : `move ${ticked.length} to trash? click again`,
-      () => onZune ? this._deleteZuneDupes(ticked.map(i => i.id)) : this._deleteLocal(ticked.map(i => i.id), { removeFromZune: false }));
+      () => {
+        if (onZune) return this._deleteZuneDupes(ticked.map(i => i.id));
+        // For each copy being deleted: the copies in its group being kept
+        const keepers = {};
+        for (const g of groups) {
+          const keep = g.items.filter(it => !isTicked(g, it)).map(it => it.id);
+          for (const it of g.items) if (isTicked(g, it) && keep.length) keepers[it.id] = keep;
+        }
+        return this._deleteLocal(ticked.map(i => i.id), { removeFromZune: false, keepers });
+      });
     bar.appendChild(del);
     c.appendChild(bar);
     this.statusEl = this._el('div', 'song-fixer-status', this.status);
@@ -534,10 +543,10 @@ class SongFixerView {
 
   // ---- deleting from the computer -------------------------------------------
 
-  async _deleteLocal(paths, { removeFromZune }) {
+  async _deleteLocal(paths, { removeFromZune, keepers }) {
     this.running = true;
     this._setStatus(`moving ${paths.length} song${paths.length === 1 ? '' : 's'} to the trash\u2026`);
-    const res = await window.electronAPI.songFixerTrash(paths, { removeFromZune });
+    const res = await window.electronAPI.songFixerTrash(paths, { removeFromZune, keepers });
     this.running = false;
     if (!res.success) {
       this._setStatus('delete failed: ' + res.error);
@@ -545,8 +554,9 @@ class SongFixerView {
       return;
     }
 
-    // Take them out of the library everywhere in the app
-    const gone = new Set(res.trashed);
+    // Take them out of the library everywhere in the app (including files
+    // that were already gone from disk)
+    const gone = new Set([...res.trashed, ...(res.missing || [])]);
     const ex = this.explorer;
     for (const p of gone) ex.musicLibrary.tracks.delete(p);
     if (ex.categorizedFiles?.music) ex.categorizedFiles.music = ex.categorizedFiles.music.filter(f => !gone.has(f.path));
@@ -561,8 +571,14 @@ class SongFixerView {
       zp._renderDiffList();
     }
 
-    this._setStatus(`${res.trashed.length} moved to the trash` +
-      (res.failed.length ? `, ${res.failed.length} couldn\u2019t be moved (${res.failed[0].error})` : '') + '.' +
+    const missingN = (res.missing || []).length;
+    const blocked = res.failed.filter(f => f.keeperMissing).length;
+    const otherFailed = res.failed.filter(f => !f.keeperMissing);
+    const parts = [`${res.trashed.length} moved to the trash`];
+    if (missingN) parts.push(`${missingN} were already gone from your computer (removed from the list)`);
+    if (blocked) parts.push(`${blocked} kept because the copy you\u2019re keeping isn\u2019t available right now (is its drive connected?)`);
+    if (otherFailed.length) parts.push(`${otherFailed.length} couldn\u2019t be moved (${otherFailed[0].error})`);
+    this._setStatus(parts.join(', ') + '.' +
       (removeFromZune && res.trashed.length ? ' to remove them from your zune too, press \u201cupdate zune\u201d in its music list.' : ''));
     this._draw();
   }

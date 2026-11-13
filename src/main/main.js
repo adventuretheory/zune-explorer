@@ -1189,7 +1189,13 @@ ipcMain.handle('song-fixer-trash', async (event, paths, opts) => {
   try {
     if (!Array.isArray(paths)) throw new Error('Bad request');
     const ok = paths.filter(p => typeof p === 'string' && isAllowedPath(p));
-    const result = await songFixer.trash(ok, { removeFromZune: !!opts?.removeFromZune });
+    const keepers = {};
+    if (opts?.keepers && typeof opts.keepers === 'object') {
+      for (const [k, v] of Object.entries(opts.keepers)) {
+        if (Array.isArray(v)) keepers[k] = v.filter(x => typeof x === 'string').slice(0, 50);
+      }
+    }
+    const result = await songFixer.trash(ok, { removeFromZune: !!opts?.removeFromZune, keepers });
     return { success: true, ...result };
   } catch (error) {
     return { success: false, error: error.message };
