@@ -782,7 +782,31 @@ function sortSongs(items, key, get) {
   return rows.sort(cmp).map(r => r.item);
 }
 
+/**
+ * Differences that mean a song's tags are actually wrong (not just written
+ * differently): title, artist or album after ignoring case, accents,
+ * punctuation, "feat." credits and placeholders like "Unknown Album".
+ * @returns {string[]} the fields that really differ
+ */
+function meaningfulChanges(current, proposal) {
+  const loose = (v, field) => {
+    let t = clean(v);
+    if (!t || PLACEHOLDER_RE.test(t) || GUID_RE.test(t)) return '';
+    if (field === 'artist') t = t.replace(/\s*[([]?\b(feat\.?|ft\.?|featuring|with)\b.*$/i, '');
+    if (field === 'title') t = t.replace(/\s*[([](feat\.?|ft\.?|featuring)\b[^)\]]*[)\]]/gi, '');
+    return norm(t).replace(/\bthe\b/g, '').replace(/\band\b/g, '').replace(/\s+/g, ' ').trim();
+  };
+  const out = [];
+  for (const f of ['title', 'artist', 'album']) {
+    const want = loose(proposal[f], f);
+    if (!want) continue; // the lookup has nothing to say about this field
+    if (loose(current[f], f) !== want) out.push(f);
+  }
+  return out;
+}
+
 const songFixerLogic = {
+  meaningfulChanges,
   SORT_OPTIONS,
   sortSongs,
   kbpsFrom,

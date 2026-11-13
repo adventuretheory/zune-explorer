@@ -579,6 +579,32 @@ class SongFixer {
     await fs.writeFile(path.join(this.undoDir, 'zune-synced.json'), JSON.stringify(synced));
   }
 
+  // ---- Songs confirmed correct by sound --------------------------------------
+
+  _confirmedFile() { return path.join(this.undoDir, 'confirmed.json'); }
+
+  /** Paths confirmed earlier whose files haven't changed since. */
+  async confirmedGet() {
+    let saved = {};
+    try { saved = JSON.parse(await fs.readFile(this._confirmedFile(), 'utf8')); } catch { /* none yet */ }
+    const out = [];
+    for (const [p, sig] of Object.entries(saved)) {
+      if (sig && sig === await this._fileSig(p)) out.push(p);
+    }
+    return out;
+  }
+
+  async confirmedAdd(paths) {
+    let saved = {};
+    try { saved = JSON.parse(await fs.readFile(this._confirmedFile(), 'utf8')); } catch { /* none yet */ }
+    for (const p of paths) {
+      const sig = await this._fileSig(p);
+      if (sig) saved[p] = sig;
+    }
+    await fs.mkdir(this.undoDir, { recursive: true });
+    await fs.writeFile(this._confirmedFile(), JSON.stringify(saved));
+  }
+
   async _readSynced() {
     try { return JSON.parse(await fs.readFile(path.join(this.undoDir, 'zune-synced.json'), 'utf8')); } catch { return {}; }
   }

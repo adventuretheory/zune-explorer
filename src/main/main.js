@@ -1205,6 +1205,10 @@ ipcMain.handle('song-fixer-apply', async (event, batchId, filePath, tags, opts) 
 
 ipcMain.handle('song-fixer-undo-info', async () => songFixer.undoInfo());
 ipcMain.handle('song-fixer-zune-pending', async () => songFixer.zunePending());
+ipcMain.handle('song-fixer-confirmed-get', async () => songFixer.confirmedGet());
+ipcMain.handle('song-fixer-confirmed-add', async (event, paths) => {
+  if (Array.isArray(paths)) await songFixer.confirmedAdd(paths.filter(p => typeof p === 'string' && isAllowedPath(p)));
+});
 
 // Cover art for one release from the Cover Art Archive, as bytes (or null)
 async function coverForRelease(mbid) {

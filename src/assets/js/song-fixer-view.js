@@ -32,9 +32,12 @@ class SongFixerView {
     for (const [path, track] of this.explorer.musicLibrary.tracks) {
       const old = prev.get(path);
       const reasons = logic.suspectReasons(track, path);
-      items.push(old ? Object.assign(old, { track, reasons }) : {
+      const item = old ? Object.assign(old, { track, reasons }) : {
         path, track, reasons, state: 'idle', result: null, albumIdx: 0, selected: false, error: null,
-      });
+      };
+      // Confirmed correct by sound earlier (and the file hasn't changed since)
+      if (item.state === 'idle' && this.confirmed?.has(path)) item.state = 'confirmed';
+      items.push(item);
     }
     items.sort((a, b) => (a.track.title || '').localeCompare(b.track.title || ''));
     this.items = items;
@@ -45,7 +48,7 @@ class SongFixerView {
     const list = this.items.filter(i =>
       // Fixed songs leave "needs fixing" (they're still under "all songs"),
       // so select all / delete only cover what's left
-      (this.mode === 'all' || (i.state !== 'applied' && (i.reasons.length > 0 || i.state !== 'idle'))) &&
+      (this.mode === 'all' || (i.state !== 'applied' && i.state !== 'confirmed' && (i.reasons.length > 0 || i.state !== 'idle'))) &&
       (!q || [i.track.title, i.track.artist, i.track.album, i.path].some(v => String(v || '').toLowerCase().includes(q))));
     if (!this._sizes || this._sizes.size !== (this.explorer.categorizedFiles?.music || []).length) {
       this._sizes = new Map((this.explorer.categorizedFiles?.music || []).map(f => [f.path, f.size || 0]));
@@ -92,6 +95,9 @@ class SongFixerView {
 
   async render(container) {
     this.container = container;
+    if (!this.confirmed) {
+      try { this.confirmed = new Set(await window.electronAPI.songFixerConfirmedGet()); } catch { this.confirmed = new Set(); }
+    }
     if (!this.running) this._loadItems();
     try { this.undoInfo = await window.electronAPI.songFixerUndoInfo(); } catch { this.undoInfo = null; }
     if (this.container !== container) return;
@@ -224,7 +230,8 @@ class SongFixerView {
   _actions() {
     const bar = this._el('div', 'zune-diff-actions song-fixer-actions');
     const selected = this.items.filter(i => i.selected);
-    const toIdentify = selected.filter(i => i.state !== 'found' && i.state !== 'applied' && i.state !== 'working');
+    // Already confirmed correct: no need to check again
+    const toIdentify = selected.filter(i => !['found', 'applied', 'working', 'confirmed'].includes(i.state));
     const toApply = selected.filter(i => i.state === 'found');
 
     if (this.running) {
@@ -319,6 +326,12 @@ class SongFixerView {
 
     wrap.appendChild(this._sortMenu(() => this._drawList()));
 
+    if (this.mode === 'all') {
+      wrap.appendChild(this._el('div', 'song-fixer-note song-fixer-howto',
+        'to check songs that look fine: tick some (filter by an artist or album, or use \u201cselect only: not checked yet\u201d) and press identify. ' +
+        'songs whose tags match what the audio really is get \u2713 confirmed and are remembered; the rest show what\u2019s wrong.'));
+    }
+
     // Select all (visible)
     const all = this._el('label', 'zune-diff-select-all');
     const allBox = this._el('input');
@@ -335,8 +348,9 @@ class SongFixerView {
     // that weren't recognised, then "clean up names"
     const groups = [
       ['not recognised', visible.filter(i => i.state === 'none' || i.state === 'error')],
-      ['recognised', visible.filter(i => i.state === 'found')],
-      ['not looked up yet', visible.filter(i => i.state === 'idle')],
+      ['tags look wrong', visible.filter(i => i.state === 'found')],
+      ['not checked yet', visible.filter(i => i.state === 'idle')],
+      ['confirmed', visible.filter(i => i.state === 'confirmed')],
       ['no album art', visible.filter(i => !(i.track.albumArtKey || i.track.albumArt))],
     ].filter(([, list]) => list.length && list.length < visible.length);
     const selRow = this._el('div', 'song-fixer-quickselect');
@@ -416,6 +430,10 @@ class SongFixerView {
       case 'error':
         line.textContent = item.error || 'something went wrong';
         line.classList.add('bad');
+        return line;
+      case 'confirmed':
+        line.textContent = '\u2713 tags confirmed by sound';
+        line.classList.add('good');
         return line;
       case 'applied':
         line.textContent = '✓ fixed';
@@ -842,7 +860,12 @@ class SongFixerView {
     this.running = true;
     this.stopRequested = false;
     this._refreshActions();
-    let found = 0, none = 0, failed = 0;
+    let found = 0, none = 0, failed = 0, confirmed = 0;
+    const newlyConfirmed = [];
+    if (items.length > 60) {
+      const mins = Math.max(1, Math.round(items.length * 2 / 60));
+      this.explorer.showToast?.(`checking ${items.length} songs takes about ${mins < 90 ? mins + ' minutes' : Math.round(mins / 60) + ' hours'} \u2014 you can press stop any time; checked songs are remembered`);
+    }
 
     for (let n = 0; n < items.length; n++) {
       if (this.stopRequested) break;
@@ -870,12 +893,37 @@ class SongFixerView {
         item.note = res.note || null;
         none++;
       } else {
-        item.result = res;
-        item.albumIdx = 0;
-        item.state = 'found';
-        found++;
+        const really = window.songFixerLogic.meaningfulChanges(res.current, res.proposal);
+        if (!really.length && res.proposal.source === 'sound') {
+          // The audio says this is exactly what the tags already say
+          item.state = 'confirmed';
+          item.selected = false;
+          item.result = res;
+          newlyConfirmed.push(item.path);
+          confirmed++;
+        } else if (!really.length) {
+          // Only the title search ran, and it found the same name: proves nothing
+          item.state = 'none';
+          item.note = 'couldn\u2019t confirm by sound (the title search only found the same name)';
+          none++;
+        } else {
+          item.result = res;
+          item.albumIdx = 0;
+          item.state = 'found';
+          found++;
+        }
       }
       this._updateRow(item);
+      // Save confirmations as we go, so a long run can be stopped and resumed
+      if (newlyConfirmed.length >= 20) {
+        const batch = newlyConfirmed.splice(0);
+        batch.forEach(p => this.confirmed.add(p));
+        window.electronAPI.songFixerConfirmedAdd(batch);
+      }
+    }
+    if (newlyConfirmed.length) {
+      newlyConfirmed.forEach(p => this.confirmed.add(p));
+      await window.electronAPI.songFixerConfirmedAdd(newlyConfirmed.splice(0));
     }
 
     // Anything still marked working (stopped early) goes back to idle, and songs
@@ -885,7 +933,7 @@ class SongFixerView {
       if (i.state === 'none' || i.state === 'error') i.selected = false;
     }
     this.running = false;
-    this._setStatus(`${found} recognised, ${none} not recognised${failed ? `, ${failed} failed` : ''}. ` +
+    this._setStatus(`${confirmed ? `${confirmed} confirmed correct, ` : ''}${found} ${confirmed ? 'look wrong' : 'recognised'}, ${none} not recognised${failed ? `, ${failed} failed` : ''}. ` +
       (found ? 'check the suggestions, untick any that look wrong, then press apply. ' : '') +
       (none + failed ? 'for the rest: \u201cselect only: not recognised\u201d below, then \u201cclean up names\u201d \u2014 or \u201cedit\u201d one song.' : ''));
     this._drawList();

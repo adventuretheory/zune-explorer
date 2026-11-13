@@ -435,3 +435,20 @@ test('planZuneUpdate treats "Unknown Album" and a blank album as the same (no en
   const current = new Map([['/m/s.mp3', { title: 'Song', artist: 'A', album: 'Unknown Album' }]]);
   assert.deepEqual(L.planZuneUpdate(pending, device, current).upToDate, ['/m/s.mp3']);
 });
+
+test('meaningfulChanges ignores how a name is written, catches wrong ones', () => {
+  const mc = L.meaningfulChanges;
+  assert.deepEqual(mc({ title: 'Clocks', artist: 'Coldplay', album: 'A Rush of Blood to the Head' },
+                      { title: 'clocks', artist: 'Coldplay', album: 'A Rush Of Blood To The Head' }), []);
+  assert.deepEqual(mc({ title: 'Down', artist: 'Jay Sean feat. Lil Wayne', album: 'All or Nothing' },
+                      { title: 'Down', artist: 'Jay Sean', album: 'All or Nothing' }), []);
+  assert.deepEqual(mc({ title: "Don't Stop Believin'", artist: 'Journey', album: 'Escape' },
+                      { title: 'Don’t Stop Believin’', artist: 'Journey', album: 'Escape' }), []);
+  assert.deepEqual(mc({ title: 'Song', artist: 'Band', album: 'Unknown Album' },
+                      { title: 'Song', artist: 'Band', album: null }), []);
+  // Actually wrong
+  assert.deepEqual(mc({ title: 'Heaven', artist: 'Bryan Adams', album: 'Reckless' },
+                      { title: 'Heaven', artist: 'DJ Sammy', album: 'Heaven' }), ['artist', 'album']);
+  assert.deepEqual(mc({ title: 'Track 7', artist: 'Tool', album: 'Ænima' },
+                      { title: 'Forty Six & 2', artist: 'Tool', album: 'Ænima' }), ['title']);
+});

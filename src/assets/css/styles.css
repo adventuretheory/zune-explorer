@@ -4459,3 +4459,4 @@ body.zune-edge-shown .content-area { padding-right: 72px; }
 body.zune-panel-open .content-area { padding-right: 372px; }
 
 .song-fixer-apply-error { color: #ff6b6b; font-size: 12px; margin-top: 2px; }
+.song-fixer-howto { font-size: 12px; color: var(--zune-text-dim); margin: 2px 0 4px; }
