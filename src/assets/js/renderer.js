@@ -4129,17 +4129,62 @@ class ZuneExplorer {
         this.showDynamicContextMenu(e, items);
     }
 
-    /** "Show in Finder" and "Move to Trash" for songs on this computer. */
+    /** "Show in Finder", album art and "Move to Trash" for songs on this computer. */
     songFileMenuItems(paths) {
         if (!paths.length) return [];
         const finder = this.platform === 'darwin' ? 'Show in Finder' : this.platform === 'win32' ? 'Show in Explorer' : 'Show in Folder';
         const items = [];
         if (paths.length === 1) items.push({ label: finder, action: () => window.electronAPI.showItemInFolder(paths[0]) });
+
+        // Album art: for these songs, or for every song on the same album
+        const t = this.musicLibrary.tracks.get(paths[0]) || {};
+        const realAlbum = t.album && !/^unknown album$/i.test(t.album);
+        const albumPaths = realAlbum && paths.length === 1
+            ? [...this.musicLibrary.tracks].filter(([, x]) => x.album === t.album && (x.albumArtist || x.artist) === (t.albumArtist || t.artist)).map(([p]) => p)
+            : [];
+        const n = paths.length === 1 ? '' : ` (${paths.length} songs)`;
+        items.push({ label: `Find Album Art Online${n}`, action: () => this.addAlbumArt(paths) });
+        items.push({ label: `Set Album Art from Image\u2026${n}`, action: () => this.addAlbumArt(paths, { pickImage: true }) });
+        if (albumPaths.length > 1) {
+            items.push({ label: `Set Album Art for \u201c${t.album}\u201d (${albumPaths.length} songs)\u2026`, action: () => this.addAlbumArt(albumPaths, { pickImage: true, replace: true }) });
+        }
         items.push({
             label: paths.length === 1 ? 'Move to Trash\u2026' : `Move ${paths.length} Songs to Trash\u2026`,
             action: () => this.trashSongs(paths),
         });
         return items;
+    }
+
+    /**
+     * Add cover art to songs: from an image the person picks, or looked up
+     * online. Returns { added, skipped, failed, reasons }.
+     */
+    async addAlbumArt(paths, { pickImage = false, replace = false, onProgress } = {}) {
+        let imagePath = null;
+        if (pickImage) {
+            imagePath = await window.electronAPI.pickImage();
+            if (!imagePath) return null;
+            replace = true; // a picked image is a deliberate choice
+        }
+        const batchId = String(Date.now());
+        const out = { added: 0, skipped: 0, failed: 0, reasons: [] };
+        const done = [];
+        for (let i = 0; i < paths.length; i++) {
+            const p = paths[i];
+            const t = this.musicLibrary.tracks.get(p) || {};
+            onProgress?.(i + 1, paths.length);
+            if (!onProgress && paths.length > 1) this.showToast?.(`album art: ${i + 1} of ${paths.length}\u2026`);
+            const res = await window.electronAPI.songFixerAddArt(batchId, p, { title: t.title, artist: t.albumArtist || t.artist, album: t.album }, { imagePath, replace });
+            if (!res.success) { out.failed++; out.reasons.push(res.error); }
+            else if (res.added) { out.added++; done.push(p); }
+            else { out.skipped++; if (res.skipped) out.reasons.push(res.skipped); }
+        }
+        if (done.length) await window.electronAPI.batchScanAudioMetadata(done, { includeArt: true });
+        const why = [...new Set(out.reasons)].slice(0, 2).join('; ');
+        this.showToast?.(`album art added to ${out.added} song${out.added === 1 ? '' : 's'}` +
+            (out.skipped + out.failed ? ` \u00b7 ${out.skipped + out.failed} not changed (${why})` : '') +
+            (out.added ? ' \u00b7 press \u201cupdate zune\u201d to put it on your zune' : ''));
+        return out;
     }
 
     /**

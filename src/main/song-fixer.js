@@ -298,10 +298,18 @@ class SongFixer {
     try {
       await execFileAsync(this.ffmpegPath, args, { maxBuffer: 1 << 24 });
       const after = await fs.stat(temp);
-      // The audio is copied as-is, so the new file should be about the same size
-      if (after.size < before.size * 0.9) throw new Error('rewritten file came out too small');
       const { parseFile } = await import('music-metadata');
-      await parseFile(temp, { duration: false });
+      if (dropCover) {
+        // Taking the cover out shrinks the file by the image's size, so check
+        // the audio itself instead: it must be just as long as before
+        const [a, b] = await Promise.all([parseFile(filePath, { duration: true }), parseFile(temp, { duration: true })]);
+        const da = a.format.duration || 0, db = b.format.duration || 0;
+        if (!db || Math.abs(da - db) > 1) throw new Error('rewritten file is a different length');
+      } else {
+        // The audio is copied as-is, so the new file should be about the same size
+        if (after.size < before.size * 0.9) throw new Error('rewritten file came out too small');
+        await parseFile(temp, { duration: false });
+      }
       await fs.rename(temp, filePath);
     } catch (err) {
       await fs.unlink(temp).catch(() => {});
@@ -381,18 +389,49 @@ class SongFixer {
     await fs.writeFile(this._pendingFile(), JSON.stringify(list, null, 1));
   }
 
-  async _addPending(filePath, oldTags) {
+  async _addPending(filePath, oldTags, { artChanged = false } = {}) {
     const list = await this._readPending();
     // Keep the oldest tags: that's the version the Zune still has
-    if (!list.some(e => e.path === filePath)) {
+    const existing = list.find(e => e.path === filePath);
+    if (!existing) {
       list.push({
         path: filePath,
         fileName: path.basename(filePath),
         before: { title: oldTags.title || '', artist: oldTags.artist || '', album: oldTags.album || '' },
         removedFromZune: false,
+        ...(artChanged ? { artChanged: true } : {}),
       });
       await this._writePending(list);
+    } else if (artChanged && !existing.artChanged) {
+      existing.artChanged = true;
+      await this._writePending(list);
     }
+  }
+
+  /**
+   * Embed cover art in a song (MP3, M4A or FLAC). Recorded in the batch so
+   * "undo last fix" removes it again, and queued for "update zune".
+   * @param {Buffer} image  JPEG or PNG bytes
+   * @returns {{ added: boolean, skipped?: string }}
+   */
+  async addCover(batchId, filePath, image, { replace = false } = {}) {
+    const ext = path.extname(filePath).toLowerCase();
+    if (!['.mp3', '.m4a', '.mp4', '.flac'].includes(ext)) {
+      throw new Error(`album art can't be added to ${ext.replace('.', '').toUpperCase()} files`);
+    }
+    const current = await this.readTags(filePath);
+    if (current.hasCover && !replace) return { added: false, skipped: 'already has album art' };
+    const isPng = image[0] === 0x89 && image[1] === 0x50;
+    const coverPath = path.join(require('os').tmpdir(), `zunefix-cover-${Date.now()}${isPng ? '.png' : '.jpg'}`);
+    await fs.writeFile(coverPath, image);
+    try {
+      await this._rewrite(filePath, {}, { coverPath });
+    } finally {
+      await fs.unlink(coverPath).catch(() => {});
+    }
+    await this._record(batchId, { path: filePath, before: {}, addedCover: !current.hasCover });
+    await this._addPending(filePath, current, { artChanged: true });
+    return { added: true };
   }
 
   /**

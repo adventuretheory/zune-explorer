@@ -215,6 +215,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   songFixerUndo: () => ipcRenderer.invoke('song-fixer-undo'),
   songFixerZunePending: () => ipcRenderer.invoke('song-fixer-zune-pending'),
   songFixerTrash: (paths, opts) => ipcRenderer.invoke('song-fixer-trash', paths, opts),
+  songFixerAddArt: (batchId, filePath, info, opts) => ipcRenderer.invoke('song-fixer-add-art', batchId, filePath, info, opts),
+  pickImage: () => ipcRenderer.invoke('pick-image'),
   songFixerZuneRemoved: (paths) => ipcRenderer.invoke('song-fixer-zune-removed', paths),
   songFixerZuneDone: (paths) => ipcRenderer.invoke('song-fixer-zune-done', paths),
   clearMetadataCache: () => ipcRenderer.invoke('clear-metadata-cache'),

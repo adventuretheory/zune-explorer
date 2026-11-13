@@ -284,7 +284,8 @@ function planZuneUpdate(pending, device, current, { libraryKeys = new Set(), lin
     const old = findOld(e);
     if (old) {
       if (!old.handle) plan.needsRescan.push(e.path);
-      else if (now.title && full(old) === full(now)) plan.upToDate.push(e.path);
+      // New cover art doesn't change the tags, but the Zune copy still needs replacing
+      else if (now.title && full(old) === full(now) && !e.artChanged) plan.upToDate.push(e.path);
       else plan.replace.push({ path: e.path, handle: old.handle });
       continue;
     }

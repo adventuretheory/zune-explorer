@@ -419,3 +419,12 @@ test('sortSongs orders by name, length, quality and messiness', () => {
   assert.equal(order('messy')[0], 'Angel');
   assert.equal(L.kbpsFrom(12e6, 307), 313);
 });
+
+test('planZuneUpdate replaces a Zune copy when only the cover art changed', () => {
+  const pending = [{ path: '/m/s.mp3', fileName: 's.mp3', before: { title: 'Song', artist: 'A', album: 'B' }, artChanged: true }];
+  const device = [{ handle: 3, filename: 's.mp3', title: 'Song', artist: 'A', album: 'B' }];
+  const current = new Map([['/m/s.mp3', { title: 'Song', artist: 'A', album: 'B' }]]);
+  assert.deepEqual(L.planZuneUpdate(pending, device, current).replace, [{ path: '/m/s.mp3', handle: 3 }]);
+  // Without the art flag the same copy counts as up to date
+  assert.deepEqual(L.planZuneUpdate([{ ...pending[0], artChanged: false }], device, current).upToDate, ['/m/s.mp3']);
+});

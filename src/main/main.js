@@ -1205,6 +1205,76 @@ ipcMain.handle('song-fixer-apply', async (event, batchId, filePath, tags, opts) 
 
 ipcMain.handle('song-fixer-undo-info', async () => songFixer.undoInfo());
 ipcMain.handle('song-fixer-zune-pending', async () => songFixer.zunePending());
+
+// Cover art for one release from the Cover Art Archive, as bytes (or null)
+async function coverForRelease(mbid) {
+  const dataUrl = await musicbrainz.getCoverArt(mbid);
+  const m = dataUrl && dataUrl.match(/^data:image\/(jpeg|jpg|png);base64,(.+)$/);
+  return m ? Buffer.from(m[2], 'base64') : null;
+}
+
+// Find album art online: by album + artist, else via the song's own title
+async function findAlbumArt({ title, artist, album }) {
+  const clean = (v) => String(v || '').replace(/["\\]/g, ' ').trim();
+  const junk = (v) => !clean(v) || /^unknown (artist|album)$/i.test(clean(v));
+  const tried = new Set();
+  const tryReleases = async (ids) => {
+    for (const id of ids.slice(0, 4)) {
+      if (!id || tried.has(id)) continue;
+      tried.add(id);
+      const img = await coverForRelease(id).catch(() => null);
+      if (img && img.length > 1000) return img;
+    }
+    return null;
+  };
+  if (!junk(album) && !junk(artist)) {
+    const releases = await musicbrainz.searchReleases(clean(album), clean(artist)).catch(() => []);
+    const img = await tryReleases(releases.map(r => r.mbid));
+    if (img) return img;
+  }
+  if (!junk(title) && !junk(artist)) {
+    const res = await musicbrainz.searchRecordings(`recording:"${clean(title)}" AND artist:"${clean(artist)}"`, 5).catch(() => null);
+    const ids = [];
+    for (const rec of res?.recordings || []) for (const rel of rec.releases || []) ids.push(rel.id);
+    const img = await tryReleases(ids);
+    if (img) return img;
+  }
+  return null;
+}
+
+// Add album art to one song: from an image file the person picked, or found online
+ipcMain.handle('song-fixer-add-art', async (event, batchId, filePath, info, opts) => {
+  try {
+    if (!/^\d+$/.test(String(batchId))) throw new Error('Bad batch id');
+    if (typeof filePath !== 'string' || !isAllowedPath(filePath)) throw new Error('Path not allowed');
+    let image = null;
+    if (opts?.imagePath) {
+      if (typeof opts.imagePath !== 'string') throw new Error('Bad image');
+      image = await fs.readFile(opts.imagePath);
+    } else {
+      // Skip the lookup for songs that already have art (unless replacing)
+      if (!opts?.replace) {
+        const tags = await songFixer.readTags(filePath).catch(() => null);
+        if (tags?.hasCover) return { success: true, added: false, skipped: 'already has album art' };
+      }
+      image = await findAlbumArt(info || {});
+      if (!image) return { success: true, added: false, skipped: 'no album art found online' };
+    }
+    const r = await songFixer.addCover(String(batchId), filePath, image, { replace: !!opts?.replace });
+    return { success: true, ...r };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('pick-image', async () => {
+  const r = await dialog.showOpenDialog(mainWindow, {
+    title: 'Choose album art',
+    properties: ['openFile'],
+    filters: [{ name: 'Images', extensions: ['jpg', 'jpeg', 'png'] }],
+  });
+  return r.canceled || !r.filePaths.length ? null : r.filePaths[0];
+});
 ipcMain.handle('song-fixer-trash', async (event, paths, opts) => {
   try {
     if (!Array.isArray(paths)) throw new Error('Bad request');

@@ -252,7 +252,31 @@ class SongFixerView {
     tidy.title = 'remove ID codes, website names and junk from the name, and split \u201cArtist - Title\u201d \u2014 no lookup; review, then apply';
     tidy.addEventListener('click', () => this._cleanupNames(toClean));
 
-    bar.append(identify, tidy, apply);
+    // Cover art for selected songs, looked up online
+    const toArt = selected.filter(i => i.state !== 'working');
+    const art = this._el('button', 'zune-sync-btn song-fixer-cleanup-btn', `add album art (${toArt.length})`);
+    art.disabled = toArt.length === 0;
+    art.title = 'finds each song\u2019s cover online (MusicBrainz / Cover Art Archive) and adds it to the file; songs that already have art are skipped';
+    art.addEventListener('click', async () => {
+      this.running = true;
+      this._refreshActions();
+      const r = await this.explorer.addAlbumArt(toArt.map(i => i.path), {
+        onProgress: (n, total) => this._setStatus(`looking for album art: ${n} of ${total}\u2026`),
+      });
+      this.running = false;
+      if (r) {
+        const why = [...new Set(r.reasons)].slice(0, 2).join('; ');
+        this._setStatus(`album art added to ${r.added} song${r.added === 1 ? '' : 's'}` +
+          (r.skipped + r.failed ? `, ${r.skipped + r.failed} not changed (${why})` : '') + '.' +
+          (r.added ? ' to put it on your zune, press \u201cupdate zune\u201d in its music list.' : ''));
+      }
+      try { this.undoInfo = await window.electronAPI.songFixerUndoInfo(); } catch {}
+      await new Promise(res => setTimeout(res, 300));
+      this._loadItems();
+      this._draw();
+    });
+
+    bar.append(identify, tidy, apply, art);
 
     // Songs that can't be fixed (or aren't wanted) can go to the Trash
     const toDelete = selected.filter(i => i.state !== 'working' && i.state !== 'applied');
@@ -313,6 +337,7 @@ class SongFixerView {
       ['not recognised', visible.filter(i => i.state === 'none' || i.state === 'error')],
       ['recognised', visible.filter(i => i.state === 'found')],
       ['not looked up yet', visible.filter(i => i.state === 'idle')],
+      ['no album art', visible.filter(i => !(i.track.albumArtKey || i.track.albumArt))],
     ].filter(([, list]) => list.length && list.length < visible.length);
     const selRow = this._el('div', 'song-fixer-quickselect');
     selRow.appendChild(all);

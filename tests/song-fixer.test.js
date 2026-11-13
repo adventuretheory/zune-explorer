@@ -231,3 +231,37 @@ test('a song with no usable length in its header gets measured, so AcoustID gets
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('addCover embeds art, queues the song for the Zune, and undo removes it', { skip: !haveFfmpeg && 'ffmpeg binary not installed' }, async () => {
+  const { SongFixer } = require('../src/main/song-fixer.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'songfixer-'));
+  try {
+    const song = path.join(dir, 'song.mp3');
+    const cover = path.join(dir, 'cover.jpg');
+    const wma = path.join(dir, 'song.wma');
+    execFileSync(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'sine=f=300:d=4', '-c:a', 'libmp3lame', '-metadata', 'title=Song', '-y', song]);
+    execFileSync(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'mandelbrot=s=300x300', '-frames:v', '1', '-y', cover]);
+    execFileSync(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'sine=f=300:d=2', '-c:a', 'wmav2', '-y', wma]);
+    const sf = new SongFixer({ ffmpegPath, dataDir: dir });
+
+    assert.equal((await sf.readTags(song)).hasCover, false);
+    const r = await sf.addCover('300', song, fs.readFileSync(cover));
+    assert.equal(r.added, true);
+    const tags = await sf.readTags(song);
+    assert.equal(tags.hasCover, true);
+    assert.equal(tags.title, 'Song', 'other tags are kept');
+
+    // Already has art: skipped unless replacing
+    assert.equal((await sf.addCover('301', song, fs.readFileSync(cover))).skipped, 'already has album art');
+
+    const pending = await sf.zunePending();
+    assert.equal(pending.find(e => e.path === song).artChanged, true);
+
+    await assert.rejects(sf.addCover('302', wma, fs.readFileSync(cover)), /can't be added to WMA/);
+
+    await sf.undoLast(); // undoes batch 300 (301/302 recorded nothing)
+    assert.equal((await sf.readTags(song)).hasCover, false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
