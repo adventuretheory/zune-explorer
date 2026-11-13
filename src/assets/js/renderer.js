@@ -1260,8 +1260,13 @@ class ZuneSyncPanel {
             }
             return groups;
         };
+        // Ignore case, accents and punctuation: the Zune may store "T's" where
+        // the file says "T’s", or "and" where the file says "&"
+        const loose = (v) => String(v || '').toLowerCase().normalize('NFKD')
+            .replace(/[\u0300-\u036f]/g, '').replace(/&/g, ' and ')
+            .replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
         const metaKey = (t) => {
-            const key = `${(t.title || '').toLowerCase()}|||${(t.artist || '').toLowerCase()}`;
+            const key = `${loose(t.title)}|||${loose(t.artist)}`;
             return key === '|||' ? null : key;
         };
         const matchedDeviceHandles = new Set();
