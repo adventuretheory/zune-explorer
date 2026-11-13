@@ -283,38 +283,64 @@ class SongFixer {
    * Rewrite tags via a temp file next to the original, check the result, then
    * swap it in. The original is untouched if anything goes wrong.
    */
+  /**
+   * Rewrite tags via a temp file next to the original, check the result, then
+   * swap it in. The original is untouched if anything goes wrong.
+   *
+   * If the first attempt fails it tries the next sensible thing:
+   * - an ".mp3" that actually holds other audio (often AAC from a download)
+   *   can't take MP3 tags as-is, so its audio is converted to MP3 (320 kbps);
+   * - if the cover image is the problem, the tags are saved without it.
+   * @returns {{ transcoded: boolean, coverSkipped: boolean }}
+   */
   async _rewrite(filePath, tags, { coverPath = null, dropCover = false } = {}) {
     const ext = path.extname(filePath).toLowerCase();
     const dir = path.dirname(filePath);
-    const temp = path.join(dir, `.${path.basename(filePath, ext)}.zunefix-${Date.now()}${ext}`);
-    const args = logic.buildTagArgs(filePath, temp, tags, { coverPath, ext });
-    if (dropCover) {
-      // Remove the "-map 0:v?" pair so only audio is kept
-      const i = args.indexOf('0:v?');
-      if (i > 0) args.splice(i - 1, 2);
-    }
-
     const before = await fs.stat(filePath);
-    try {
-      await execFileAsync(this.ffmpegPath, args, { maxBuffer: 1 << 24 });
-      const after = await fs.stat(temp);
-      const { parseFile } = await import('music-metadata');
+    const { parseFile } = await import('music-metadata');
+    const sameLength = async (temp) => {
+      const [a, b] = await Promise.all([parseFile(filePath, { duration: true }), parseFile(temp, { duration: true })]);
+      const da = a.format.duration || 0, db = b.format.duration || 0;
+      if (!db || (da && Math.abs(da - db) > 1)) throw new Error('rewritten file is a different length');
+    };
+    const MP3_MISMATCH = /exactly one mp3 audio stream|invalid audio stream|not currently supported in container|could not find tag for codec|codec .* not supported/i;
+
+    let plan = { cover: coverPath, transcode: false };
+    let lastReason = '';
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const temp = path.join(dir, `.${path.basename(filePath, ext)}.zunefix-${Date.now()}-${attempt}${ext}`);
+      const args = logic.buildTagArgs(filePath, temp, tags, { coverPath: plan.cover, ext });
       if (dropCover) {
-        // Taking the cover out shrinks the file by the image's size, so check
-        // the audio itself instead: it must be just as long as before
-        const [a, b] = await Promise.all([parseFile(filePath, { duration: true }), parseFile(temp, { duration: true })]);
-        const da = a.format.duration || 0, db = b.format.duration || 0;
-        if (!db || Math.abs(da - db) > 1) throw new Error('rewritten file is a different length');
-      } else {
-        // The audio is copied as-is, so the new file should be about the same size
-        if (after.size < before.size * 0.9) throw new Error('rewritten file came out too small');
-        await parseFile(temp, { duration: false });
+        // Remove the "-map 0:v?" pair so only audio is kept
+        const i = args.indexOf('0:v?');
+        if (i > 0) args.splice(i - 1, 2);
       }
-      await fs.rename(temp, filePath);
-    } catch (err) {
-      await fs.unlink(temp).catch(() => {});
-      throw new Error(`Could not update tags: ${err.message.split('\n')[0]}`);
+      if (plan.transcode) args.splice(args.length - 2, 0, '-c:a', 'libmp3lame', '-b:a', '320k');
+      try {
+        await execFileAsync(this.ffmpegPath, args, { maxBuffer: 1 << 24 });
+        if (dropCover || plan.transcode) {
+          // Size changes when a cover is removed or audio converted: compare lengths
+          await sameLength(temp);
+        } else {
+          // The audio is copied as-is, so the new file should be about the same size
+          const after = await fs.stat(temp);
+          if (after.size < before.size * 0.9) throw new Error('rewritten file came out too small');
+          await parseFile(temp, { duration: false });
+        }
+        await fs.rename(temp, filePath);
+        return { transcoded: plan.transcode, coverSkipped: !!coverPath && !plan.cover };
+      } catch (err) {
+        await fs.unlink(temp).catch(() => {});
+        // ffmpeg's own explanation is on stderr; keep its last meaningful line
+        const stderr = String(err.stderr || '').trim().split('\n').filter(Boolean);
+        lastReason = stderr.length ? stderr[stderr.length - 1] : String(err.message).split('\n')[0];
+        const all = `${err.stderr || ''} ${err.message || ''}`;
+        if (ext === '.mp3' && !plan.transcode && MP3_MISMATCH.test(all)) plan = { ...plan, transcode: true };
+        else if (plan.cover) plan = { ...plan, cover: null };
+        else break;
+      }
     }
+    throw new Error(`Could not update tags: ${lastReason}`);
   }
 
   /**
@@ -340,16 +366,17 @@ class SongFixer {
       }
     }
 
+    let outcome = {};
     try {
-      await this._rewrite(filePath, tags, { coverPath });
-      addedCover = !!coverPath;
+      outcome = await this._rewrite(filePath, tags, { coverPath });
+      addedCover = !!coverPath && !outcome.coverSkipped;
     } finally {
       if (coverPath) await fs.unlink(coverPath).catch(() => {});
     }
 
     await this._record(batchId, { path: filePath, before, addedCover });
     await this._addPending(filePath, current);
-    return { addedCover };
+    return { addedCover, transcoded: !!outcome.transcoded, coverSkipped: !!outcome.coverSkipped };
   }
 
   // ---- Songs fixed here but not yet updated on the Zune ---------------------
@@ -424,11 +451,13 @@ class SongFixer {
     const isPng = image[0] === 0x89 && image[1] === 0x50;
     const coverPath = path.join(require('os').tmpdir(), `zunefix-cover-${Date.now()}${isPng ? '.png' : '.jpg'}`);
     await fs.writeFile(coverPath, image);
+    let outcome = {};
     try {
-      await this._rewrite(filePath, {}, { coverPath });
+      outcome = await this._rewrite(filePath, {}, { coverPath });
     } finally {
       await fs.unlink(coverPath).catch(() => {});
     }
+    if (outcome.coverSkipped) throw new Error('this image couldn\u2019t be added to the file');
     await this._record(batchId, { path: filePath, before: {}, addedCover: !current.hasCover });
     await this._addPending(filePath, current, { artChanged: true });
     return { added: true };
@@ -444,6 +473,7 @@ class SongFixer {
     // marked done (or fixed again later) still gets onto the Zune. The plan
     // skips the ones that are already up to date or aren't on the Zune.
     const seen = new Set(list.map(e => e.path));
+    const synced = await this._readSynced();
     let names = [];
     try { names = await fs.readdir(this.undoDir); } catch { /* no history */ }
     const batches = names.filter(n => /^\d+\.json$/.test(n)).sort((x, y) => Number(x.slice(0, -5)) - Number(y.slice(0, -5)));
@@ -453,6 +483,8 @@ class SongFixer {
       for (const e of entries) {
         if (!e?.path || seen.has(e.path)) continue;
         seen.add(e.path);
+        // Already handled for the Zune and unchanged since: nothing to do
+        if (synced[e.path] && synced[e.path] === await this._fileSig(e.path)) continue;
         list.push({
           path: e.path,
           fileName: path.basename(e.path),
@@ -536,6 +568,23 @@ class SongFixer {
   async zuneDone(paths) {
     const set = new Set(paths);
     await this._writePending((await this._readPending()).filter(e => !set.has(e.path)));
+    // Remember each file as it is now: unless it changes again (a new fix),
+    // it won't be offered for "update zune" any more
+    const synced = await this._readSynced();
+    for (const p of paths) {
+      const sig = await this._fileSig(p);
+      if (sig) synced[p] = sig;
+    }
+    await fs.mkdir(this.undoDir, { recursive: true });
+    await fs.writeFile(path.join(this.undoDir, 'zune-synced.json'), JSON.stringify(synced));
+  }
+
+  async _readSynced() {
+    try { return JSON.parse(await fs.readFile(path.join(this.undoDir, 'zune-synced.json'), 'utf8')); } catch { return {}; }
+  }
+
+  async _fileSig(p) {
+    try { const st = await fs.stat(p); return `${Math.round(st.mtimeMs)}:${st.size}`; } catch { return null; }
   }
 
   // ---- Undo -----------------------------------------------------------------

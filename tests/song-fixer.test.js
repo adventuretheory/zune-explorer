@@ -74,10 +74,11 @@ test('fixed songs are remembered for the Zune until updated, and undo forgets th
     await sf.zuneMarkRemoved([a]);
     assert.equal((await sf.zunePending())[0].removedFromZune, true);
     await sf.zuneDone([a]);
-    // Done songs leave the to-do list but stay in the fix history, where the
-    // plan finds them up to date (or not on the Zune) and skips them
-    const after = await sf.zunePending();
-    assert.deepEqual(after.map(e => [path.basename(e.path), !!e.fromHistory]), [['a.mp3', true]]);
+    // Done and unchanged since: not offered again
+    assert.deepEqual(await sf.zunePending(), []);
+    // Changed again (a new fix): back for the Zune
+    await sf.apply('202', a, { title: 'Newest A' });
+    assert.deepEqual((await sf.zunePending()).map(e => path.basename(e.path)), ['a.mp3']);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -160,12 +161,20 @@ test('songs marked done still come back from the fix history for re-checking', a
     fs.writeFileSync(path.join(dir, 'song-fixer', '1800.json'), JSON.stringify([{ path: a, before: { title: 'Old' } }]));
     const sf = new SongFixer({ ffmpegPath: 'unused', dataDir: dir });
     await sf.zunePending(); // seeds the list
-    await sf.zuneDone([a]); // wrongly marked done
+    // Crossed off by the old bug: removed from the list without a "synced"
+    // record, so the fix history still brings it back
+    await sf._writePending([]);
     const again = await sf.zunePending();
     assert.equal(again.length, 1);
     assert.equal(again[0].path, a);
     assert.equal(again[0].fromHistory, true);
     assert.equal(again[0].before.title, 'Old');
+    // Properly done (with a synced record) and unchanged: stays away
+    await sf.zuneDone([a]);
+    assert.deepEqual(await sf.zunePending(), []);
+    // The file changes afterwards: it comes back
+    fs.writeFileSync(a, 'xy');
+    assert.equal((await sf.zunePending()).length, 1);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -261,6 +270,47 @@ test('addCover embeds art, queues the song for the Zune, and undo removes it', {
 
     await sf.undoLast(); // undoes batch 300 (301/302 recorded nothing)
     assert.equal((await sf.readTags(song)).hasCover, false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a fake ".mp3" holding AAC audio still gets fixed (converted to real MP3)', { skip: !haveFfmpeg && 'ffmpeg binary not installed' }, async () => {
+  const { SongFixer } = require('../src/main/song-fixer.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'songfixer-'));
+  try {
+    const song = path.join(dir, 'The Beatles - Help!.mp3');
+    // AAC audio in an MP4 container, named .mp3 (common for downloads)
+    execFileSync(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'sine=f=300:d=5',
+      '-c:a', 'aac', '-f', 'mp4', '-y', song]);
+    const sf = new SongFixer({ ffmpegPath, dataDir: dir });
+    const r = await sf.apply('400', song, { title: 'Help!', artist: 'The Beatles', album: 'Help!' }, { addCover: false });
+    assert.equal(r.transcoded, true);
+    const tags = await sf.readTags(song);
+    assert.equal(tags.title, 'Help!');
+    assert.equal(tags.artist, 'The Beatles');
+    assert.ok(Math.abs(tags.duration - 5) < 0.5);
+    const { parseFile } = await import('music-metadata');
+    assert.match((await parseFile(song)).format.codec || '', /MPEG.*layer 3|mp3/i, 'now real MP3 audio');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a broken cover image doesn\'t stop the tags being fixed', { skip: !haveFfmpeg && 'ffmpeg binary not installed' }, async () => {
+  const { SongFixer } = require('../src/main/song-fixer.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'songfixer-'));
+  try {
+    const song = path.join(dir, 'song.mp3');
+    execFileSync(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'sine=f=300:d=4', '-c:a', 'libmp3lame', '-y', song]);
+    const junk = Buffer.alloc(5000, 7); // says image/jpeg, isn't
+    const sf = new SongFixer({ ffmpegPath, dataDir: dir, fetchBinary: async () => ({ data: junk, contentType: 'image/jpeg' }) });
+    const r = await sf.apply('401', song, { title: 'Fixed' }, { releaseGroupId: '11111111-2222-3333-4444-555555555555', addCover: true });
+    assert.equal(r.coverSkipped, true);
+    assert.equal(r.addedCover, false);
+    assert.equal((await sf.readTags(song)).title, 'Fixed');
+    // And the error, when nothing can be saved, carries ffmpeg's reason
+    await assert.rejects(sf._rewrite(path.join(dir, 'missing.mp3'), { title: 'x' }), (e) => /Could not update tags|ENOENT/.test(e.message));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

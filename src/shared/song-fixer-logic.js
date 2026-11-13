@@ -244,7 +244,9 @@ function buildTagArgs(input, output, tags, { coverPath = null, ext = '.mp3' } = 
  */
 function planZuneUpdate(pending, device, current, { libraryKeys = new Set(), linked = new Map() } = {}) {
   const base = (f) => String(f || '').split(/[/\\]/).pop().toLowerCase();
-  const full = (x) => `${norm(x.title)}|${norm(x.artist)}|${norm(x.album)}`;
+  // "Unknown Album" on one side and blank on the other are the same thing
+  const val = (v) => (PLACEHOLDER_RE.test(clean(v)) || GUID_RE.test(clean(v)) ? '' : norm(v));
+  const full = (x) => `${val(x.title)}|${val(x.artist)}|${val(x.album)}`;
   const byName = new Map();
   const byTags = new Map();
   const add = (map, k, item) => { if (!map.has(k)) map.set(k, []); map.get(k).push(item); };

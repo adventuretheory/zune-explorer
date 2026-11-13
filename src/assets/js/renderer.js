@@ -1659,7 +1659,12 @@ class ZuneSyncPanel {
             const msg = [];
             if (toSend.length) msg.push(`${succeeded.length} fixed song${succeeded.length === 1 ? '' : 's'} updated`);
             if (plan.remove.length) msg.push(`${removedDeleted.length} deleted song${removedDeleted.length === 1 ? '' : 's'} removed`);
-            if (missed || notRemoved) msg.push(`${missed + notRemoved} didn\u2019t go through (press update again to retry)`);
+            if (missed || notRemoved) {
+                const sentSet = new Set(succeeded);
+                const leftNames = [...toSend.filter(p => !sentSet.has(p)), ...plan.remove.filter(r => !removedDeleted.includes(r.path)).map(r => r.path)]
+                    .slice(0, 3).map(p => p.split(/[/\\]/).pop()).join(', ');
+                msg.push(`${missed + notRemoved} didn\u2019t go through (${leftNames}) \u2014 press update again to retry`);
+            }
             if (plan.notOnZune.length) msg.push(`${plan.notOnZune.length} fixed song${plan.notOnZune.length === 1 ? ' wasn\u2019t' : 's weren\u2019t'} on the zune, so ${plan.notOnZune.length === 1 ? 'it was' : 'they were'} left alone`);
             this.explorer.showToast?.(msg.join(', '));
         } catch (err) {
