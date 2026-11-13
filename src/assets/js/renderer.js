@@ -590,6 +590,28 @@ class ZuneSyncPanel {
                 bytesEl.textContent = `${sentMB} / ${totalMB} MB`;
                 break;
 
+            case 'finishing': {
+                // Songs are on the Zune; now its artist/album entries are built
+                idleEl.style.display = 'none';
+                progressEl.style.display = 'block';
+                completeEl.style.display = 'none';
+                document.getElementById('zune-sync-title').textContent = 'finishing up...';
+                const what = { reading: 'reading the zune\u2019s albums', artists: 'artists', albums: 'albums' }[progress.step] || progress.step;
+                if (progress.total) {
+                    document.getElementById('zune-sync-subtitle').textContent = `${what} ${progress.done} of ${progress.total}`;
+                    countEl.textContent = `updating zune library \u2014 ${what} ${progress.done} of ${progress.total}`;
+                    fillEl.style.width = ((progress.done / progress.total) * 100).toFixed(1) + '%';
+                } else {
+                    document.getElementById('zune-sync-subtitle').textContent = what;
+                    countEl.textContent = `updating zune library \u2014 ${what}`;
+                    fillEl.style.width = '0%';
+                }
+                fileEl.textContent = progress.name || '';
+                bytesEl.textContent = 'all songs sent \u2014 adding artist and album info so they show up properly';
+                overallEl.style.width = '100%';
+                break;
+            }
+
             case 'complete':
                 progressEl.style.display = 'none';
                 completeEl.style.display = 'block';

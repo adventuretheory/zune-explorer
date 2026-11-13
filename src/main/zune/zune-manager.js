@@ -511,14 +511,21 @@ class ZuneManager extends EventEmitter {
     // creating a fresh album object for every drop (which produces N copies
     // of the same album, each holding one track — see issue #6), we first
     // discover the artists/albums already on the device and reuse them.
+    // This runs after the last song is sent and can take a while; report it
+    // so the sync screen doesn't look frozen.
+    const report = (step, done, total, name) =>
+      this.emit('transfer-progress', { state: 'finishing', step, done, total, name: name || '' });
+    report('reading', 0, 0);
     const existing = await this._discoverExistingEntities();
 
     const artistHandles = new Map(); // artist name -> object handle
+    const uniqueArtists = new Set([...albumMap.values()].map(a => a.artist)).size;
 
     // Resolve or create an Artist object for each unique artist in this batch
     for (const [, albumInfo] of albumMap) {
       const artistName = albumInfo.artist;
       if (artistHandles.has(artistName)) continue;
+      report('artists', artistHandles.size + 1, uniqueArtists, artistName);
 
       const reused = existing.artists.get(artistName);
       if (reused) {
@@ -552,7 +559,9 @@ class ZuneManager extends EventEmitter {
     }
 
     // Resolve or create an AbstractAudioAlbum for each album in this batch
+    let albumsDone = 0;
     for (const [key, albumInfo] of albumMap) {
+      report('albums', ++albumsDone, albumMap.size, albumInfo.album);
       try {
         const { artist, album, genre, albumArt, trackHandles } = albumInfo;
         const artistHandle = artistHandles.get(artist);
