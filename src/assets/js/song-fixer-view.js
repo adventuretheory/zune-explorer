@@ -456,6 +456,10 @@ class SongFixerView {
       line.appendChild(this._el('span', 'song-fixer-score', `  ${pct}% match`));
     }
     if (changes.length === 0 && clears.length === 0) line.appendChild(this._el('span', 'song-fixer-score', ' · tags already match'));
+    if (item.applyError) {
+      const err = this._el('div', 'song-fixer-apply-error', `couldn\u2019t save: ${item.applyError.replace(/^Could not update tags:\s*/, '')} \u2014 press apply to try again`);
+      line.appendChild(err);
+    }
 
     const albums = item.result.proposal.albums || [];
     if (albums.length > 1) {
@@ -911,10 +915,11 @@ class SongFixerView {
       if (res.success) {
         item.state = 'applied';
         item.selected = false;
+        item.applyError = null;
         fixedPaths.push(item.path);
       } else {
-        item.state = 'error';
-        item.error = res.error;
+        // Keep the suggestion so it can simply be applied again
+        item.applyError = res.error;
         failed++;
       }
       this._updateRow(item);
