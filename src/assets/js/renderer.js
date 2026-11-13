@@ -1889,7 +1889,8 @@ class ZuneSyncPanel {
                         if (panel.diffTab === 'matched') {
                             titleSpan.textContent = (item.local && item.local.title) || (item.local && item.local.name) || (item.device && item.device.title) || (item.device && item.device.filename) || '?';
                         } else {
-                            titleSpan.textContent = item.title || item.name || item.filename || '?';
+                            var tidyT = window.songFixerLogic ? window.songFixerLogic.cleanTagText(item.title) : item.title;
+                            titleSpan.textContent = tidyT || item.title || item.name || item.filename || '?';
                         }
                         infoDiv.appendChild(titleSpan);
 
@@ -1905,8 +1906,9 @@ class ZuneSyncPanel {
                                 metaSpan.textContent = parts.join(' \u2014 ');
                             } else {
                                 var parts2 = [];
-                                if (item.artist) parts2.push(item.artist);
-                                if (item.album) parts2.push(item.album);
+                                var tidy2 = function (v) { return window.songFixerLogic ? window.songFixerLogic.cleanTagText(v) : v; };
+                                if (tidy2(item.artist)) parts2.push(tidy2(item.artist));
+                                if (tidy2(item.album)) parts2.push(tidy2(item.album));
                                 metaSpan.textContent = parts2.join(' \u2014 ');
                             }
                         } else {
@@ -2286,15 +2288,23 @@ class ZuneSyncPanel {
         const category = this.diffCategory;
         const deviceItems = (this.browseData && this.browseData[category]) || [];
         const deviceByHandle = new Map(deviceItems.map(i => [i.handle, i]));
-        const metaFor = (deviceItem, withArt = true) => category === 'music' ? {
-            title: deviceItem.title || null,
-            artist: deviceItem.artist || null,
-            album: deviceItem.album || null,
-            genre: deviceItem.genre || null,
-            trackNumber: deviceItem.trackNumber || null,
-            duration: deviceItem.duration || null, // ms; lets an earlier copy be recognised
-            albumArt: withArt ? this._getBrowseArt(deviceItem) : null,
-        } : {};
+        // Copies get cleaned names and tags: no website names or ID codes
+        const tidy = (v) => (window.songFixerLogic ? window.songFixerLogic.cleanTagText(v) : (v || ''));
+        const metaFor = (deviceItem, withArt = true) => {
+            if (category !== 'music') return {};
+            const title = tidy(deviceItem.title) || deviceItem.title || null;
+            const artist = tidy(deviceItem.artist) || null;
+            const album = /^unknown album$/i.test(tidy(deviceItem.album)) ? null : (tidy(deviceItem.album) || null);
+            const cleaned = title !== (deviceItem.title || null) || artist !== (deviceItem.artist || null) ||
+                album !== (deviceItem.album || null);
+            return {
+                title, artist, album, cleaned,
+                genre: deviceItem.genre || null,
+                trackNumber: deviceItem.trackNumber || null,
+                duration: deviceItem.duration || null, // ms; lets an earlier copy be recognised
+                albumArt: withArt ? this._getBrowseArt(deviceItem) : null,
+            };
+        };
 
         // Ask once, up front, what to do when a song's file name is already
         // taken by a different file (same-length copies are skipped anyway)

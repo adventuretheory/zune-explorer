@@ -517,7 +517,7 @@ function titleSearchTerms(track, filePath) {
   // Leading track/disc numbers: "01 ", "1-11 ", "02-", "3. "
   // Only clear track numbers: zero-padded ("03 "), followed by a separator
   // ("3. ", "02-"), or disc-track pairs ("1-11 ") — so "99 Problems" stays.
-  t = t.replace(/^\s*(?:(?:0\d{1,2}|\d{1,3}[-.]\d{1,3})(?:\s*[-.)]\s*|\s+)|\d{1,3}\s*[-.)]\s*)+(?=\D)/, ' ');
+  t = t.replace(TRACK_NO_RE, ' ');
   // Number pairs like "1-11" left over inside the text
   t = t.replace(/\b\d{1,2}-\d{1,2}\b/g, ' ');
 
@@ -636,7 +636,95 @@ function pickTitleSearchMatch(mbResponse, terms, durationSec, current = {}) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Cleaning up names without looking anything up
+// ---------------------------------------------------------------------------
+
+const SITE_RE = /(https?:\/\/\S+|www\.\S+|\b[a-z0-9][a-z0-9-]*\.(com|net|org|info|biz|ru|co\.uk|me|tv|fm|us|cc)\b(\/\S*)?)/gi;
+const JUNK_PHRASE_RE = /\b(official( music)? video|official audio|official lyrics?|music ?video|lyrics? video|lyric video|with lyrics|lyrics on screen|lyrics in description|top quality|high quality|full song|free download|\d{2,3} ?kbps)\b/gi;
+
+/**
+ * Remove junk from one tag value: ID codes, website names and links,
+ * "(Official Music Video)"-style noise, underscores, dangling separators.
+ * Returns '' when nothing real is left (e.g. an album that was just a site).
+ */
+function cleanTagText(value) {
+  let t = clean(value);
+  if (!t) return '';
+  t = t
+    .replace(GUID_ANY_RE, ' ')
+    // brackets that only hold a site or junk: "[www.site.com]", "(Lyrics)"
+    .replace(/[([{][^)\]}]*(https?:|www\.|\.(com|net|org|info|biz|ru|me|tv|fm)\b)[^)\]}]*[)\]}]/gi, ' ')
+    .replace(SITE_RE, ' ')
+    .replace(/_/g, ' ')
+    .replace(JUNK_PHRASE_RE, ' ')
+    .replace(/\s+amp\s+/gi, ' & ')          // "&amp;" mangled in a file name
+    .replace(/\s+(hd|hq)\s*$/i, ' ')
+    .replace(/[([{]\s*(hq|hd|lyrics?|audio|video|mp3)?\s*[)\]}]/gi, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+    // separators left dangling at either end: "- Song -", "-~-Song-~-"
+    .replace(/^[\s\-–—|~:.,]+|[\s\-–—|~:,]+$/g, '')
+    .trim();
+  // A value that's now wrapped in brackets loses them: "(New Music Studio)"
+  const m = t.match(/^[([](.*)[)\]]$/);
+  if (m && !/[()[\]]/.test(m[1])) t = m[1].trim();
+  return t;
+}
+
+// "headhunters" -> "Headhunters" (only when it's all lower case)
+function smartCase(s) {
+  if (!s || s !== s.toLowerCase() || !/[a-z]/.test(s)) return s;
+  return s.replace(/(^|[\s(\-[/])([a-z])/g, (_, pre, c) => pre + c.toUpperCase());
+}
+
+const TRACK_NO_RE = /^\s*(?:(?:0\d{1,2}|\d{1,3}-\d{1,3}(?=\s))(?:\s*[-.)]\s*|\s+)|\d{1,3}\s*[.)]\s+|\d{1,3}\s+[-–]\s+)+(?=\D)/;
+
+/**
+ * Propose cleaned title / artist / album from a song's messy tags or file
+ * name, without any lookup. `knownArtists` (normalised names in the library)
+ * lets "Basshunter-Welcome To Rainbow" split even without spaces.
+ * @returns {{ title, artist, album }} ('' where nothing usable is left)
+ */
+function proposeCleanTags(track, filePath, knownArtists = new Set()) {
+  const rawTitle = clean(track.title);
+  const titleSource = !rawTitle || PLACEHOLDER_RE.test(rawTitle) || GUID_RE.test(rawTitle) ? fileStem(filePath) : rawTitle;
+  let title = cleanTagText(titleSource).replace(TRACK_NO_RE, '').trim();
+  let artist = isJunkArtist(track.artist) ? '' : cleanTagText(track.artist);
+
+  if (!artist) {
+    const parts = title.split(/\s+[-–—]\s+/).map(x => x.trim()).filter(Boolean);
+    if (parts.length >= 2) {
+      artist = parts[0];
+      title = parts.slice(1).join(' - ');
+    } else {
+      // "Basshunter-Welcome To Rainbow": split only on an artist we know
+      const m = title.match(/^([^-]{2,40})-(.+)$/);
+      if (m && knownArtists.has(norm(m[1]))) { artist = m[1].trim(); title = m[2].trim(); }
+    }
+  }
+  let album = cleanTagText(track.album);
+  if (PLACEHOLDER_RE.test(album) || GUID_RE.test(album)) album = '';
+  if (PLACEHOLDER_RE.test(artist)) artist = '';
+  return { title: smartCase(title), artist: smartCase(artist), album };
+}
+
+/** A "cleanup" proposal (same shape as a lookup's) from current tags. */
+function cleanupProposal(current, filePath, knownArtists) {
+  const c = proposeCleanTags(current, filePath, knownArtists);
+  const proposal = { source: 'cleanup', score: null, title: c.title || null, artist: c.artist || null, album: c.album || null, albums: [], clear: [] };
+  // Fields that held only junk get emptied rather than left as they were
+  for (const f of ['artist', 'album']) {
+    const had = clean(current[f]);
+    if (!c[f] && had && !/^unknown (artist|album)$/i.test(had)) proposal.clear.push(f);
+  }
+  return proposal;
+}
+
 const songFixerLogic = {
+  cleanTagText,
+  proposeCleanTags,
+  cleanupProposal,
   titleSearchTerms,
   titleSearchQueries,
   pickTitleSearchMatch,

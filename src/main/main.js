@@ -890,6 +890,7 @@ ipcMain.handle('zune-pull-file', async (event, handle, filename, destDir, metada
     tempFiles.push(tempRaw);
 
     let finalPath;
+    let cleanTagsAfterMove = false;
 
     if (WMA_EXTENSIONS.has(ext)) {
       // Convert WMA → MP3 via ffmpeg
@@ -933,6 +934,11 @@ ipcMain.handle('zune-pull-file', async (event, handle, filename, destDir, metada
       }
 
       // Embed text metadata
+      // Cleaned names replace the WMA's own junk tags (empty clears a field)
+      if (metadata?.cleaned) {
+        if (!metadata.artist) ffArgs.push('-metadata', 'artist=');
+        if (!metadata.album) ffArgs.push('-metadata', 'album=');
+      }
       if (metadata?.title) ffArgs.push('-metadata', `title=${metadata.title}`);
       if (metadata?.artist) ffArgs.push('-metadata', `artist=${metadata.artist}`);
       if (metadata?.album) ffArgs.push('-metadata', `album=${metadata.album}`);
@@ -951,10 +957,23 @@ ipcMain.handle('zune-pull-file', async (event, handle, filename, destDir, metada
     } else {
       // MP3/AAC — just move to destination (already playable)
       finalPath = await destFor(baseName, ext);
+      cleanTagsAfterMove = !!metadata?.cleaned;
       await fs.rename(tempRaw, finalPath).catch(async () => {
         // rename fails across filesystems, fall back to copy+delete
         await fs.copyFile(tempRaw, finalPath);
       });
+    }
+
+    // The Zune's tags had junk (website names, ID codes): put the cleaned
+    // ones into the copied file as well. Best-effort; the copy is kept anyway.
+    if (cleanTagsAfterMove && songFixer) {
+      try {
+        await songFixer._rewrite(finalPath, {
+          title: metadata.title || '', artist: metadata.artist || '', album: metadata.album || '',
+        });
+      } catch (err) {
+        console.log(`zune-pull-file: could not clean tags of ${path.basename(finalPath)}: ${err.message}`);
+      }
     }
 
     const finalStats = await fs.stat(finalPath);
@@ -1158,6 +1177,7 @@ ipcMain.handle('song-fixer-identify', async (event, filePath, libraryTrack) => {
       artist: String(libraryTrack.artist || '').slice(0, 500),
       album: String(libraryTrack.album || '').slice(0, 500),
       duration: Number(libraryTrack.duration) || 0,
+      hint: libraryTrack.hint === true,
     } : {};
     const result = await songFixer.identify(filePath, key, lt);
     return { success: true, ...result };

@@ -4391,3 +4391,7 @@ body.platform-linux .now-playing-panel {
 }
 .song-play-btn:hover { color: #fff; border-color: var(--zune-orange); }
 .song-play-btn.playing { color: #fff; border-color: var(--zune-orange); background: rgba(255, 105, 0, 0.15); }
+.song-fixer-edit { align-self: flex-start; font-size: 12px; margin-top: 2px; }
+.song-fixer-editor { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; max-width: 560px; }
+.song-fixer-edit-input { padding: 6px 10px; font-size: 13px; }
+.song-fixer-edit-buttons { display: flex; gap: 18px; }

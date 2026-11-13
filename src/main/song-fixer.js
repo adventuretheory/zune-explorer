@@ -182,9 +182,10 @@ class SongFixer {
       current = { title: '', artist: '', album: '', duration: 0 };
     }
 
-    // 1. Listen to the audio (needs an AcoustID key and a readable length)
+    // 1. Listen to the audio (needs an AcoustID key and a readable length).
+    // A "hint" search uses the person's own typed title and skips this.
     let soundError = null;
-    if (apiKey && current.duration) {
+    if (apiKey && current.duration && !libraryTrack.hint) {
       try {
         const fp = await this.fingerprint(filePath);
         const response = await this._acoustidLookup(apiKey, fp, current.duration);
@@ -207,8 +208,13 @@ class SongFixer {
 
   async _identifyByTitle(filePath, current, libraryTrack) {
     if (!this.searchRecordings) return null;
-    // Prefer what the file says; the library's view fills gaps
-    const track = {
+    // Prefer what the file says; the library's view fills gaps. Text the
+    // person typed in ("hint") wins over both.
+    const track = libraryTrack.hint ? {
+      title: libraryTrack.title || '',
+      artist: libraryTrack.artist || '',
+      album: libraryTrack.album || '',
+    } : {
       title: current.title || libraryTrack.title || '',
       artist: current.artist || libraryTrack.artist || '',
       album: current.album || libraryTrack.album || '',

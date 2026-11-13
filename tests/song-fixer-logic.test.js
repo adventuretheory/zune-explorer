@@ -362,3 +362,40 @@ test('numbered copies ("Song (2)") made by repeated copying group with the origi
   assert.equal(groups[0].items.length, 4);
   assert.equal(groups[0].keepId, 'a'); // the un-numbered one; the others "look like a copy"
 });
+
+test('cleanTagText removes ID codes, websites and video junk', () => {
+  assert.equal(L.cleanTagText('www.EveryoneLovesHipHop.com'), '');
+  assert.equal(L.cleanTagText('DOPEHOOD.COM'), '');
+  assert.equal(L.cleanTagText('Newgrounds Audio Portal - http://www.newgrounds.com/audio'), 'Newgrounds Audio Portal');
+  assert.equal(L.cleanTagText('WWW.BUMSQUADDJZ.COM (NEW MUSIC STUDIO RELOADED)'), 'NEW MUSIC STUDIO RELOADED');
+  assert.equal(L.cleanTagText('Usher - OMG (Official Music Video) [www.dopehood.com] 320kbps'), 'Usher - OMG');
+  assert.equal(L.cleanTagText('{09316835-3188-481c-a359-0f8d2a937ac8} - Down'), 'Down');
+  assert.equal(L.cleanTagText('-~-BEST TECHNO SONG EVER-~-'), 'BEST TECHNO SONG EVER');
+  assert.equal(L.cleanTagText('LMFAO Feat Lauren Bennett amp Goon Rock'), 'LMFAO Feat Lauren Bennett & Goon Rock');
+  // Real names are left alone
+  assert.equal(L.cleanTagText('We R Who We R (Clean)'), 'We R Who We R (Clean)');
+  assert.equal(L.cleanTagText('Mr. Brightside'), 'Mr. Brightside');
+  assert.equal(L.cleanTagText('8-Bit Trip'), '8-Bit Trip');
+});
+
+test('proposeCleanTags splits "Artist - Title", fixes case, and keeps numbers in names', () => {
+  const G = '{09316835-3188-481c-a359-0f8d2a937ac8}';
+  const p = (title, artist = 'Unknown Artist', album = 'Unknown Album') => L.proposeCleanTags({ title, artist, album }, '/m/x.mp3', new Set(['basshunter']));
+  assert.deepEqual(p(`${G} - headhunters - the power of the mind`), { title: 'The Power Of The Mind', artist: 'Headhunters', album: '' });
+  assert.deepEqual(p(`${G} - Basshunter-Welcome To Rainbow Hardstyle Mix`), { title: 'Welcome To Rainbow Hardstyle Mix', artist: 'Basshunter', album: '' });
+  assert.deepEqual(p(`${G} - Flo-rida Lady Gaga J.Timberlake PCD`), { title: 'Flo-rida Lady Gaga J.Timberlake PCD', artist: '', album: '' }); // unknown artist: no split on "-"
+  assert.deepEqual(p(`${G} - 8-Bit Trip`), { title: '8-Bit Trip', artist: '', album: '' });
+  assert.deepEqual(p('03 Coldplay - Clocks'), { title: 'Clocks', artist: 'Coldplay', album: '' });
+  assert.deepEqual(p('99 Problems', 'Jay-Z', 'The Black Album'), { title: '99 Problems', artist: 'Jay-Z', album: 'The Black Album' });
+});
+
+test('cleanupProposal empties fields that only held junk', () => {
+  const r = L.cleanupProposal({ title: 'All Mine', artist: 'Kevin Rudolf', album: 'DOPEHOOD.COM' }, '/m/x.mp3');
+  assert.equal(r.source, 'cleanup');
+  assert.equal(r.title, 'All Mine');
+  assert.equal(r.artist, 'Kevin Rudolf');
+  assert.equal(r.album, null);
+  assert.deepEqual(r.clear, ['album']);
+  // "Unknown Album" is a placeholder the library shows, not something to clear
+  assert.deepEqual(L.cleanupProposal({ title: 'x - y', artist: 'Unknown Artist', album: 'Unknown Album' }, '/m/x.mp3').clear, []);
+});

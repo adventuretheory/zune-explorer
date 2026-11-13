@@ -219,7 +219,14 @@ class SongFixerView {
     apply.disabled = toApply.length === 0;
     apply.addEventListener('click', () => this._apply(toApply));
 
-    bar.append(identify, apply);
+    // Songs that couldn't be recognised can at least get tidy names
+    const toClean = selected.filter(i => i.state === 'idle' || i.state === 'none' || i.state === 'error');
+    const tidy = this._el('button', 'zune-sync-btn', `clean up ${toClean.length} name${toClean.length === 1 ? '' : 's'}`);
+    tidy.disabled = toClean.length === 0;
+    tidy.title = 'remove ID codes, website names and junk from the name, and split \u201cArtist - Title\u201d \u2014 no lookup; review, then apply';
+    tidy.addEventListener('click', () => this._cleanupNames(toClean));
+
+    bar.append(identify, tidy, apply);
 
     // Songs that can't be fixed (or aren't wanted) can go to the Trash
     const toDelete = selected.filter(i => i.state !== 'working' && i.state !== 'applied');
@@ -301,6 +308,16 @@ class SongFixerView {
     const meta = `${t.artist || '?'} — ${t.album || '?'}` + (item.reasons.length ? `  ·  ${item.reasons.join(', ')}` : '');
     info.appendChild(this._el('div', 'zune-diff-meta', meta));
     info.appendChild(this._resultLine(item));
+    if (item.state !== 'working' && item.state !== 'applied' && !this.running) {
+      if (item.editing) {
+        info.appendChild(this._editor(item));
+      } else {
+        const editLink = this._el('button', 'song-fixer-link song-fixer-edit', 'edit');
+        editLink.title = 'type the title, artist and album yourself';
+        editLink.addEventListener('click', () => { item.editing = true; this._updateRow(item); });
+        info.appendChild(editLink);
+      }
+    }
     row.appendChild(this._playButton(item.path));
     row.appendChild(info);
     return row;
@@ -338,19 +355,25 @@ class SongFixerView {
     const parts = [
       ['title', p.title], ['artist', p.artist], ['album', p.album],
     ];
+    const clears = p.clear || [];
     parts.forEach(([field, value], idx) => {
       if (idx) line.appendChild(document.createTextNode(' — '));
-      const changed = changes.some(c => c.field === field);
-      line.appendChild(this._el('span', changed ? 'song-fixer-changed' : '', value || '?'));
+      const removed = clears.includes(field) && !value;
+      const changed = removed || changes.some(c => c.field === field);
+      line.appendChild(this._el('span', changed ? 'song-fixer-changed' : '', removed ? `(${field} removed)` : (value || '?')));
     });
     const extra = [p.year, p.trackNumber ? `track ${p.trackNumber}` : null].filter(Boolean).join(', ');
     if (extra) line.appendChild(document.createTextNode(` (${extra})`));
     if (p.source === 'title') {
       line.appendChild(this._el('span', 'song-fixer-title-match', '  found by title \u2014 check it'));
+    } else if (p.source === 'cleanup') {
+      line.appendChild(this._el('span', 'song-fixer-title-match', '  cleaned-up name \u2014 check it'));
+    } else if (p.source === 'manual') {
+      line.appendChild(this._el('span', 'song-fixer-score', '  your edit'));
     } else {
       line.appendChild(this._el('span', 'song-fixer-score', `  ${pct}% match`));
     }
-    if (changes.length === 0) line.appendChild(this._el('span', 'song-fixer-score', ' · tags already match'));
+    if (changes.length === 0 && clears.length === 0) line.appendChild(this._el('span', 'song-fixer-score', ' · tags already match'));
 
     const albums = item.result.proposal.albums || [];
     if (albums.length > 1) {
@@ -407,6 +430,115 @@ class SongFixerView {
       btn.textContent = label;
       action();
     });
+  }
+
+  // ---- clean-up and manual edits -------------------------------------------
+
+  _knownArtists() {
+    const logic = window.songFixerLogic;
+    const set = new Set();
+    for (const t of this.explorer.musicLibrary.tracks.values()) {
+      if (t.artist) set.add(logic.tagKey('', t.artist).slice(1));
+    }
+    return set;
+  }
+
+  _currentOf(item) {
+    const t = item.track || {};
+    return { title: t.title || '', artist: t.artist || '', album: t.album || '' };
+  }
+
+  _cleanupNames(items) {
+    const logic = window.songFixerLogic;
+    const known = this._knownArtists();
+    let n = 0;
+    for (const item of items) {
+      const current = this._currentOf(item);
+      const proposal = logic.cleanupProposal(current, item.path, known);
+      if (!proposal.title) continue;
+      // Already clean: nothing to suggest
+      if (!logic.proposedChanges(current, proposal).length && !proposal.clear.length) continue;
+      item.result = { current, proposal };
+      item.albumIdx = 0;
+      item.state = 'found';
+      item.selected = true;
+      n++;
+    }
+    this._setStatus(`${n} name${n === 1 ? '' : 's'} cleaned up. check them (\u25B6 to listen, \u201cedit\u201d to change one), then press apply.`);
+    this._drawList();
+    this._refreshActions();
+  }
+
+  /** Inline title / artist / album editor for one song. */
+  _editor(item) {
+    const logic = window.songFixerLogic;
+    const box = this._el('div', 'song-fixer-editor');
+    // Start from the suggestion if there is one, else from a cleaned-up name
+    const start = item.state === 'found' && item.result?.proposal
+      ? this._proposal(item)
+      : logic.cleanupProposal(this._currentOf(item), item.path, this._knownArtists());
+    const fields = {};
+    for (const [key, label] of [['title', 'title'], ['artist', 'artist'], ['album', 'album']]) {
+      const input = this._el('input', 'zune-diff-filter-input song-fixer-edit-input');
+      input.placeholder = label;
+      input.value = start?.[key] || '';
+      input.addEventListener('click', (e) => e.stopPropagation());
+      fields[key] = input;
+      box.appendChild(input);
+    }
+    const values = () => ({ title: fields.title.value.trim(), artist: fields.artist.value.trim(), album: fields.album.value.trim() });
+
+    const btns = this._el('div', 'song-fixer-edit-buttons');
+    const use = this._el('button', 'song-fixer-link song-fixer-strong', 'use these');
+    use.addEventListener('click', () => {
+      const v = values();
+      if (!v.title) { fields.title.focus(); return; }
+      const current = this._currentOf(item);
+      const clear = ['artist', 'album'].filter(f => !v[f] && current[f] && !/^unknown (artist|album)$/i.test(current[f]));
+      item.result = { current, proposal: { source: 'manual', score: null, title: v.title, artist: v.artist || null, album: v.album || null, albums: [], clear } };
+      item.albumIdx = 0;
+      item.state = 'found';
+      item.selected = true;
+      item.editing = false;
+      this._updateRow(item);
+      this._refreshActions();
+    });
+    const search = this._el('button', 'song-fixer-link', 'search with these');
+    search.title = 'look the song up using what you typed';
+    search.addEventListener('click', () => this._searchWithHint(item, values()));
+    const cancel = this._el('button', 'song-fixer-link', 'cancel');
+    cancel.addEventListener('click', () => { item.editing = false; this._updateRow(item); });
+    btns.append(use, search, cancel);
+    box.appendChild(btns);
+    setTimeout(() => fields.title.focus(), 0);
+    return box;
+  }
+
+  async _searchWithHint(item, v) {
+    if (!v.title) return;
+    item.editing = false;
+    item.state = 'working';
+    this._updateRow(item);
+    const res = await window.electronAPI.songFixerIdentify(item.path, {
+      title: v.artist ? `${v.artist} - ${v.title}` : v.title,
+      artist: v.artist, album: v.album, duration: item.track?.duration, hint: true,
+    });
+    if (res.success && res.proposal) {
+      item.result = res;
+      item.albumIdx = 0;
+      item.state = 'found';
+      item.selected = true;
+      this._setStatus('found it \u2014 check the suggestion, then apply.');
+    } else {
+      // Not found: keep what was typed as the suggestion, so it can still be applied
+      const current = this._currentOf(item);
+      item.result = { current, proposal: { source: 'manual', score: null, title: v.title, artist: v.artist || null, album: v.album || null, albums: [], clear: [] } };
+      item.state = 'found';
+      item.selected = true;
+      this._setStatus(res.success ? 'no match found for that \u2014 your text is kept as the suggestion; apply it as is, or edit and search again.' : ('search failed: ' + res.error));
+    }
+    this._updateRow(item);
+    this._refreshActions();
   }
 
   // ---- duplicates -----------------------------------------------------------
@@ -676,6 +808,8 @@ class SongFixerView {
       for (const f of ['title', 'artist', 'album', 'albumArtist', 'year', 'trackNumber', 'discNumber']) {
         if (p[f] != null && p[f] !== '') tags[f] = p[f];
       }
+      // Fields that only held junk (an album that was a website) get emptied
+      for (const f of p.clear || []) if (!(f in tags)) tags[f] = '';
       const res = await window.electronAPI.songFixerApply(batchId, item.path, tags, { releaseGroupId: p.releaseGroupId, addCover: true });
       if (res.success) {
         item.state = 'applied';
