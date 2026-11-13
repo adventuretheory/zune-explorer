@@ -245,7 +245,7 @@ class SongFixerView {
 
     // Songs that couldn't be recognised can at least get tidy names
     const toClean = selected.filter(i => i.state === 'idle' || i.state === 'none' || i.state === 'error');
-    const tidy = this._el('button', 'zune-sync-btn', `clean up ${toClean.length} name${toClean.length === 1 ? '' : 's'}`);
+    const tidy = this._el('button', 'zune-sync-btn song-fixer-cleanup-btn', `clean up ${toClean.length} name${toClean.length === 1 ? '' : 's'}`);
     tidy.disabled = toClean.length === 0;
     tidy.title = 'remove ID codes, website names and junk from the name, and split \u201cArtist - Title\u201d \u2014 no lookup; review, then apply';
     tidy.addEventListener('click', () => this._cleanupNames(toClean));
@@ -304,7 +304,32 @@ class SongFixerView {
       this._refreshActions();
     });
     all.append(allBox, document.createTextNode(`${allBox.checked ? 'deselect' : 'select'} all (${visible.length} songs)`));
-    wrap.appendChild(all);
+
+    // Quick picks once songs have been looked up: e.g. tick only the ones
+    // that weren't recognised, then "clean up names"
+    const groups = [
+      ['not recognised', visible.filter(i => i.state === 'none' || i.state === 'error')],
+      ['recognised', visible.filter(i => i.state === 'found')],
+      ['not looked up yet', visible.filter(i => i.state === 'idle')],
+    ].filter(([, list]) => list.length && list.length < visible.length);
+    const selRow = this._el('div', 'song-fixer-quickselect');
+    selRow.appendChild(all);
+    if (groups.length) {
+      selRow.appendChild(this._el('span', 'song-fixer-dim', 'select only:'));
+      for (const [label, list] of groups) {
+        const b = this._el('button', 'song-fixer-link song-fixer-pick', `${label} (${list.length})`);
+        b.addEventListener('click', () => {
+          for (const i of visible) if (i.state !== 'applied') i.selected = list.includes(i);
+          this._drawList();
+          this._refreshActions();
+        });
+        selRow.appendChild(b);
+      }
+      const none = this._el('button', 'song-fixer-link song-fixer-pick', 'none');
+      none.addEventListener('click', () => { for (const i of visible) i.selected = false; this._drawList(); this._refreshActions(); });
+      selRow.appendChild(none);
+    }
+    wrap.appendChild(selRow);
 
     for (const item of visible.slice(0, this.limit)) {
       const row = this._row(item);
@@ -830,7 +855,8 @@ class SongFixerView {
     }
     this.running = false;
     this._setStatus(`${found} recognised, ${none} not recognised${failed ? `, ${failed} failed` : ''}. ` +
-      (found ? 'check the suggestions, untick any that look wrong, then press apply.' : ''));
+      (found ? 'check the suggestions, untick any that look wrong, then press apply. ' : '') +
+      (none + failed ? 'for the rest: \u201cselect only: not recognised\u201d below, then \u201cclean up names\u201d \u2014 or \u201cedit\u201d one song.' : ''));
     this._drawList();
     this._refreshActions();
   }

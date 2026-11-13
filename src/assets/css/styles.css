@@ -4438,3 +4438,15 @@ body.platform-linux .now-playing-panel {
 .songs-table-cell.col-artist, .songs-table-cell.col-album, .songs-table-cell.col-genre, .songs-table-cell.col-format { color: #aaa; }
 .songs-table-row .song-play-btn { width: 24px; height: 24px; font-size: 9px; margin: 0; }
 .songs-table-body { overflow-y: auto; position: relative; flex: 1; scrollbar-width: thin; scrollbar-color: #333 transparent; }
+
+.song-fixer-quickselect { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 16px; border-bottom: 1px solid #1a1a1a; }
+.song-fixer-quickselect .zune-diff-select-all { border-bottom: none; }
+.song-fixer-pick { font-size: 12px; color: var(--zune-orange); }
+.song-fixer-pick:hover { color: #ff8533; }
+/* "edit" as a visible button rather than faint text */
+.song-fixer-edit {
+  color: #ccc; border: 1px solid #444; border-radius: 3px; padding: 1px 10px; margin-top: 4px;
+}
+.song-fixer-edit:hover { color: #fff; border-color: var(--zune-orange); }
+
+.song-fixer-actions .song-fixer-cleanup-btn:not(:disabled) { color: #fff; }
