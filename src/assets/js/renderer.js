@@ -1503,20 +1503,19 @@ class ZuneSyncPanel {
     async _refreshFixedButton() {
         const btn = document.getElementById('zune-update-fixed-btn');
         if (!btn || this._fixedBusy || btn.dataset.confirming) return;
-        let pending = [];
+        let plan = null;
         if (this.diffCategory === 'music' && this.browseData) {
-            try { pending = await window.electronAPI.songFixerZunePending(); } catch { pending = []; }
+            try { plan = (await this._planFixedUpdate()).plan; } catch { plan = null; }
         }
-        this.fixedPending = pending;
-        btn.style.display = pending.length ? '' : 'none';
-        btn.textContent = `update zune (${pending.length} fixed/deleted song${pending.length === 1 ? '' : 's'})`;
+        const n = plan ? plan.replace.length + plan.resend.length + plan.remove.length : 0;
+        btn.style.display = n ? '' : 'none';
+        btn.textContent = `update zune (${n} fixed/deleted song${n === 1 ? '' : 's'})`;
         btn.title = 'replace old copies of songs you fixed, and remove songs you deleted';
         btn.disabled = false;
     }
 
-    async _updateFixedSongs() {
-        const btn = document.getElementById('zune-update-fixed-btn');
-        if (this._fixedBusy || !this.browseData) return;
+    /** What "update zune" would do right now. */
+    async _planFixedUpdate() {
         const logic = window.songFixerLogic;
         const pending = await window.electronAPI.songFixerZunePending();
         const current = new Map();
@@ -1525,7 +1524,20 @@ class ZuneSyncPanel {
         // if another copy of it is still in the library.
         const libraryKeys = new Set();
         for (const t of this.explorer.musicLibrary.tracks.values()) libraryKeys.add(logic.tagKey(t.title, t.artist));
-        const plan = logic.planZuneUpdate(pending, this.browseData.music || [], current, { libraryKeys });
+        // Known Zune copies: songs copied off this Zune, and current matches
+        const linked = new Map();
+        for (const [handle, p] of Object.entries(this._pulledMap())) linked.set(p, Number(handle));
+        for (const m of (this.diffCategory === 'music' && this.diffResult?.matched) || []) {
+            if (m.local?.path && m.device?.handle) linked.set(m.local.path, m.device.handle);
+        }
+        const plan = logic.planZuneUpdate(pending, this.browseData.music || [], current, { libraryKeys, linked });
+        return { pending, plan };
+    }
+
+    async _updateFixedSongs() {
+        const btn = document.getElementById('zune-update-fixed-btn');
+        if (this._fixedBusy || !this.browseData) return;
+        const { plan } = await this._planFixedUpdate();
 
         if (plan.needsRescan.length) {
             this.explorer.showToast?.('the zune list is out of date \u2014 press rescan, then update again');
@@ -1538,7 +1550,8 @@ class ZuneSyncPanel {
         if (!btn.dataset.confirming) {
             if (count === 0) {
                 if (finished.length) await window.electronAPI.songFixerZuneDone(finished);
-                this.explorer.showToast?.('nothing to change on the zune \u2014 it already matches');
+                this.explorer.showToast?.('nothing to change on the zune \u2014 it already has your fixes' +
+                    (plan.notOnZune.length ? ` (${plan.notOnZune.length} fixed songs aren\u2019t on the zune; use sync if you want them there)` : ''));
                 this._refreshFixedButton();
                 return;
             }
@@ -1546,7 +1559,8 @@ class ZuneSyncPanel {
             if (plan.replace.length + plan.resend.length) parts.push(`replace ${plan.replace.length + plan.resend.length}`);
             if (plan.remove.length) parts.push(`remove ${plan.remove.length}`);
             btn.dataset.confirming = '1';
-            btn.textContent = `${parts.join(', ')} song${count === 1 ? '' : 's'} on zune? click again`;
+            btn.textContent = `${parts.join(', ')} song${count === 1 ? '' : 's'} on zune? click again` +
+                (plan.notOnZune.length ? ` (${plan.notOnZune.length} fixed song${plan.notOnZune.length === 1 ? ' isn\u2019t' : 's aren\u2019t'} on the zune)` : '');
             this._fixedConfirmTimer = setTimeout(() => { delete btn.dataset.confirming; this._refreshFixedButton(); }, 4000);
             return;
         }
@@ -1586,6 +1600,7 @@ class ZuneSyncPanel {
             if (toSend.length) msg.push(`${succeeded.length} fixed song${succeeded.length === 1 ? '' : 's'} updated`);
             if (plan.remove.length) msg.push(`${removedDeleted.length} deleted song${removedDeleted.length === 1 ? '' : 's'} removed`);
             if (missed || notRemoved) msg.push(`${missed + notRemoved} didn\u2019t go through (press update again to retry)`);
+            if (plan.notOnZune.length) msg.push(`${plan.notOnZune.length} fixed song${plan.notOnZune.length === 1 ? ' wasn\u2019t' : 's weren\u2019t'} on the zune, so ${plan.notOnZune.length === 1 ? 'it was' : 'they were'} left alone`);
             this.explorer.showToast?.(msg.join(', '));
         } catch (err) {
             this.explorer.showToast?.('update failed: ' + err.message);

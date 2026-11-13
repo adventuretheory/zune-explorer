@@ -236,12 +236,13 @@ function buildTagArgs(input, output, tags, { coverPath = null, ext = '.mp3' } = 
  *                 action 'delete' = the file was deleted; take its copy off the Zune
  * @param device   browse items: [{ handle, filename, title, artist, album }]
  * @param current  Map path -> current tags ({ title, artist, album })
+ * @param opts.linked  Map path -> device handle known to be that song's Zune copy
  * @param opts.libraryKeys  Set of "title|artist" keys (see tagKey) for songs still
  *                 in the library. A deleted song's Zune copy is kept when another
  *                 copy of it stays on the computer (deleting a duplicate).
  * @returns {{ replace, remove, resend, upToDate, kept, notOnZune, needsRescan }}
  */
-function planZuneUpdate(pending, device, current, { libraryKeys = new Set() } = {}) {
+function planZuneUpdate(pending, device, current, { libraryKeys = new Set(), linked = new Map() } = {}) {
   const base = (f) => String(f || '').split(/[/\\]/).pop().toLowerCase();
   const full = (x) => `${norm(x.title)}|${norm(x.artist)}|${norm(x.album)}`;
   const byName = new Map();
@@ -253,8 +254,13 @@ function planZuneUpdate(pending, device, current, { libraryKeys = new Set() } = 
   }
   const used = new Set();
   const take = (list) => (list || []).find(d => !used.has(d));
+  const byHandle = new Map(device.filter(d => d.handle).map(d => [d.handle, d]));
   const findOld = (e) => {
-    let old = take(byName.get(base(e.fileName)));
+    // A known link (copied from this Zune song, or currently matched to it)
+    // beats guessing from names and old tags
+    const h = linked.get(e.path);
+    let old = h != null && byHandle.has(h) && !used.has(byHandle.get(h)) ? byHandle.get(h) : null;
+    if (!old) old = take(byName.get(base(e.fileName)));
     if (!old && e.before?.title) old = take(byTags.get(tagKey(e.before.title, e.before.artist)));
     if (old) used.add(old);
     return old;

@@ -312,3 +312,40 @@ test('a messy copy of a different length is not grouped, and two clean versions 
   ]);
   assert.deepEqual(groups.map(g => [g.title, g.kind, g.items.length]), [['Clocks', 'different', 2]]);
 });
+
+test('planZuneUpdate uses known links for songs copied off the Zune and then fixed', () => {
+  const G = '{09316835-3188-481c-a359-0f8d2a937ac8}';
+  const pending = [
+    // Copied off the Zune (no tags), then fixed: name and old tags share nothing with the Zune copy
+    { path: `/Music/${G} - DJ Got Us Falling In Love.mp3`, fileName: `${G} - DJ Got Us Falling In Love.mp3`, before: { title: '', artist: '' } },
+    // Only on the Mac
+    { path: '/Music/mac-only.mp3', fileName: 'mac-only.mp3', before: { title: 'Old', artist: 'X' } },
+    // Already updated earlier: the Zune copy has the new tags
+    { path: '/Music/done.mp3', fileName: 'done.mp3', before: { title: 'Was', artist: 'Y' } },
+  ];
+  const device = [
+    { handle: 501, filename: 'unknown album', title: 'DJ Got Us Falling In Love', artist: G, album: '' },
+    { handle: 777, filename: 'done.mp3', title: 'Now', artist: 'Y', album: 'Real' },
+  ];
+  const current = new Map([
+    [pending[0].path, { title: 'DJ Got Us Falling In Love', artist: 'Usher', album: 'Versus' }],
+    ['/Music/mac-only.mp3', { title: 'New', artist: 'X', album: 'A' }],
+    ['/Music/done.mp3', { title: 'Now', artist: 'Y', album: 'Real' }],
+  ]);
+  const linked = new Map([[pending[0].path, 501]]);
+
+  const without = L.planZuneUpdate(pending, device, current);
+  assert.deepEqual(without.replace, [], 'without links the copied song looks "not on zune" (the bug)');
+
+  const plan = L.planZuneUpdate(pending, device, current, { linked });
+  assert.deepEqual(plan.replace, [{ path: pending[0].path, handle: 501 }]);
+  assert.deepEqual(plan.notOnZune, ['/Music/mac-only.mp3']);
+  assert.deepEqual(plan.upToDate, ['/Music/done.mp3']);
+});
+
+test('a stale link to a deleted Zune copy falls back to the other ways of matching', () => {
+  const pending = [{ path: '/m/s.mp3', fileName: 's.mp3', before: { title: 'Song', artist: 'A' } }];
+  const device = [{ handle: 9, filename: 's.mp3', title: 'Song', artist: 'A', album: 'old' }];
+  const plan = L.planZuneUpdate(pending, device, new Map([['/m/s.mp3', { title: 'Song', artist: 'A', album: 'new' }]]), { linked: new Map([['/m/s.mp3', 12345]]) });
+  assert.deepEqual(plan.replace, [{ path: '/m/s.mp3', handle: 9 }]);
+});

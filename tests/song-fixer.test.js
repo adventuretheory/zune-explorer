@@ -74,7 +74,10 @@ test('fixed songs are remembered for the Zune until updated, and undo forgets th
     await sf.zuneMarkRemoved([a]);
     assert.equal((await sf.zunePending())[0].removedFromZune, true);
     await sf.zuneDone([a]);
-    assert.deepEqual(await sf.zunePending(), []);
+    // Done songs leave the to-do list but stay in the fix history, where the
+    // plan finds them up to date (or not on the Zune) and skips them
+    const after = await sf.zunePending();
+    assert.deepEqual(after.map(e => [path.basename(e.path), !!e.fromHistory]), [['a.mp3', true]]);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -144,4 +147,25 @@ test('identify falls back to a title search when there is no AcoustID key', asyn
   assert.equal(r.proposal.artist, 'Usher feat. will.i.am');
   assert.equal(r.proposal.album, 'Raymond v. Raymond');
   assert.equal(r.proposal.trackNumber, 4);
+});
+
+test('songs marked done still come back from the fix history for re-checking', async () => {
+  const { SongFixer } = require('../src/main/song-fixer.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'songfixer-'));
+  try {
+    const a = path.join(dir, 'a.mp3');
+    fs.writeFileSync(a, 'x');
+    fs.mkdirSync(path.join(dir, 'song-fixer'));
+    fs.writeFileSync(path.join(dir, 'song-fixer', '1800.json'), JSON.stringify([{ path: a, before: { title: 'Old' } }]));
+    const sf = new SongFixer({ ffmpegPath: 'unused', dataDir: dir });
+    await sf.zunePending(); // seeds the list
+    await sf.zuneDone([a]); // wrongly marked done
+    const again = await sf.zunePending();
+    assert.equal(again.length, 1);
+    assert.equal(again[0].path, a);
+    assert.equal(again[0].fromHistory, true);
+    assert.equal(again[0].before.title, 'Old');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

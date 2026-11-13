@@ -357,7 +357,30 @@ class SongFixer {
    * files whose Zune copy should be removed.
    */
   async zunePending() {
-    return (await this._readPending()).filter(e => e.action === 'delete' || fsSync.existsSync(e.path));
+    const list = await this._readPending();
+    // Every song in the fix history is re-checked too, so a song wrongly
+    // marked done (or fixed again later) still gets onto the Zune. The plan
+    // skips the ones that are already up to date or aren't on the Zune.
+    const seen = new Set(list.map(e => e.path));
+    let names = [];
+    try { names = await fs.readdir(this.undoDir); } catch { /* no history */ }
+    const batches = names.filter(n => /^\d+\.json$/.test(n)).sort((x, y) => Number(x.slice(0, -5)) - Number(y.slice(0, -5)));
+    for (const name of batches) {
+      let entries = [];
+      try { entries = JSON.parse(await fs.readFile(path.join(this.undoDir, name), 'utf8')); } catch { continue; }
+      for (const e of entries) {
+        if (!e?.path || seen.has(e.path)) continue;
+        seen.add(e.path);
+        list.push({
+          path: e.path,
+          fileName: path.basename(e.path),
+          before: { title: e.before?.title || '', artist: e.before?.artist || '', album: e.before?.album || '' },
+          removedFromZune: false,
+          fromHistory: true,
+        });
+      }
+    }
+    return list.filter(e => e.action === 'delete' || fsSync.existsSync(e.path));
   }
 
   /**
