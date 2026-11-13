@@ -399,3 +399,23 @@ test('cleanupProposal empties fields that only held junk', () => {
   // "Unknown Album" is a placeholder the library shows, not something to clear
   assert.deepEqual(L.cleanupProposal({ title: 'x - y', artist: 'Unknown Artist', album: 'Unknown Album' }, '/m/x.mp3').clear, []);
 });
+
+test('sortSongs orders by name, length, quality and messiness', () => {
+  const songs = [
+    { t: 'Clocks', a: 'Coldplay', al: 'A Rush of Blood', d: 307, s: 12e6 },   // ~313 kbps
+    { t: 'Angel', a: 'Akon', al: 'DOPEHOOD.COM', d: 200, s: 3.2e6 },          // 128 kbps, website album
+    { t: 'Zombie', a: 'The Cranberries', al: '', d: 0, s: 5e6 },              // unknown length
+    { t: '99 Problems', a: 'Jay-Z', al: 'The Black Album', d: 234, s: 9.0e6 },   // ~308 kbps
+  ];
+  const get = (x) => ({ title: x.t, artist: x.a, album: x.al, duration: x.d, size: x.s, path: `/m/${x.t}.mp3` });
+  const order = (key) => L.sortSongs(songs, key, get).map(x => x.t);
+  assert.deepEqual(order('title'), ['99 Problems', 'Angel', 'Clocks', 'Zombie']);
+  assert.deepEqual(order('artist'), ['Akon', 'Coldplay', 'Jay-Z', 'The Cranberries'].map(a => songs.find(s => s.a === a).t));
+  assert.deepEqual(order('album'), ['Clocks', 'Angel', '99 Problems', 'Zombie']); // "" last
+  assert.deepEqual(order('longest'), ['Clocks', '99 Problems', 'Angel', 'Zombie']); // unknown last
+  assert.deepEqual(order('shortest'), ['Angel', '99 Problems', 'Clocks', 'Zombie']);
+  assert.deepEqual(order('best'), ['Clocks', '99 Problems', 'Angel', 'Zombie']);
+  assert.deepEqual(order('worst'), ['Angel', '99 Problems', 'Clocks', 'Zombie']);
+  assert.equal(order('messy')[0], 'Angel');
+  assert.equal(L.kbpsFrom(12e6, 307), 313);
+});

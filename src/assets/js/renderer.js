@@ -305,6 +305,22 @@ class ZuneSyncPanel {
             this._rescanDevice();
         });
 
+        // Sort menu for the music lists
+        const sortSel = document.getElementById('zune-diff-sort');
+        for (const [value, label] of (window.songFixerLogic?.SORT_OPTIONS || [])) {
+            const opt = document.createElement('option');
+            opt.value = value;
+            opt.textContent = label;
+            sortSel.appendChild(opt);
+        }
+        this.diffSort = 'title';
+        sortSel.value = this.diffSort;
+        sortSel.addEventListener('change', () => {
+            this.diffSort = sortSel.value;
+            this._destroyDiffScroller();
+            this._renderDiffList();
+        });
+
         // Put songs repaired by the song fixer onto the Zune (replacing old copies)
         document.getElementById('zune-update-fixed-btn').addEventListener('click', () => {
             this._updateFixedSongs();
@@ -1684,7 +1700,9 @@ class ZuneSyncPanel {
         // Apply filter
         const groupable = this.diffCategory === 'music' || this.diffCategory === 'podcasts';
         const groupBy = (showCheckboxes && groupable) ? (this.diffGroupBy || 'all') : 'all';
-        const filteredItems = this._getFilteredItems(items, groupBy);
+        let filteredItems = this._getFilteredItems(items, groupBy);
+        document.getElementById('zune-diff-sort-row').style.display = this.diffCategory === 'music' ? 'flex' : 'none';
+        if (this.diffCategory === 'music' && window.songFixerLogic) filteredItems = this._sortDiffItems(filteredItems);
 
         // Show/hide select-all and group bar based on checkbox mode
         const selectAllEl = document.getElementById('zune-diff-select-all');
@@ -1719,6 +1737,19 @@ class ZuneSyncPanel {
 
         this._updateSelectAllState(filteredItems);
         this._updateDiffActionButton();
+    }
+
+    /** Sort music rows by the chosen order (Zune rows store length in ms). */
+    _sortDiffItems(items) {
+        const sizes = this._localSizes || (this._localSizes = new Map((this.explorer.categorizedFiles?.music || []).map(f => [f.path, f.size || 0])));
+        if (sizes.size !== (this.explorer.categorizedFiles?.music || []).length) {
+            this._localSizes = new Map((this.explorer.categorizedFiles?.music || []).map(f => [f.path, f.size || 0]));
+        }
+        const local = (t) => ({ title: t.title, artist: t.artist, album: t.album, duration: t.duration || 0, size: this._localSizes.get(t.path) || 0, path: t.path });
+        const device = (d) => ({ title: d.title, artist: d.artist, album: d.album, duration: d.duration > 0 ? d.duration / 1000 : 0, size: d.size || 0, path: d.filename || '' });
+        const get = this.diffTab === 'matched' ? (m) => (m.local ? local(m.local) : device(m.device || {}))
+            : this.diffTab === 'device-only' ? device : local;
+        return window.songFixerLogic.sortSongs(items, this.diffSort || 'title', get);
     }
 
     _buildDiffEntries(items, groupBy) {
@@ -5103,7 +5134,56 @@ class ZuneExplorer {
         });
     }
 
+    _songsLayout() {
+        try { return localStorage.getItem('songs-layout') || 'table'; } catch { return 'table'; }
+    }
+
+    /** "list | table" switch shown above the songs view. */
+    _songsLayoutBar(current) {
+        const bar = document.createElement('div');
+        bar.className = 'songs-layout-bar';
+        for (const mode of ['list', 'table']) {
+            const b = document.createElement('button');
+            b.className = 'songs-layout-btn' + (mode === current ? ' active' : '');
+            b.textContent = mode;
+            b.addEventListener('click', () => {
+                if (mode === current) return;
+                try { localStorage.setItem('songs-layout', mode); } catch { /* per-session only */ }
+                if (this.songsScroller) { this.songsScroller.destroy(); this.songsScroller = null; }
+                if (this.songsTable?.scroller) { this.songsTable.scroller.destroy(); }
+                this.songsTable = null;
+                this.renderMusicSubContent();
+            });
+            bar.appendChild(b);
+        }
+        return bar;
+    }
+
+    /** ▶/⏸ for a song row: pause/resume if it's the loaded song, else play with `queue`. */
+    _songRowPlay(track, queueTracks) {
+        const current = this.audioPlayer.getCurrentFile();
+        if (current && current.path === track.path && this.audioPlayer.audio.src) {
+            this.audioPlayer.togglePlayPause();
+            return;
+        }
+        const byPath = new Map(this.categorizedFiles.music.map(f => [f.path, f]));
+        const toFile = (t) => byPath.get(t.path) || { path: t.path, name: t.title, extension: '.mp3' };
+        this.playWithNowPlaying(toFile(track), queueTracks.map(toFile));
+    }
+
+    _songPlayButton(path) {
+        const b = document.createElement('button');
+        const playing = this.isPathPlaying(path);
+        b.className = 'song-play-btn' + (playing ? ' playing' : '');
+        b.textContent = playing ? '\u23F8' : '\u25B6';
+        b.title = playing ? 'pause' : 'play';
+        b.dataset.path = path;
+        return b;
+    }
+
     renderMusicSongsView(container) {
+        if (this._songsLayout() === 'table') return this.renderMusicSongsTable(container);
+        if (this.songsTable) { this.songsTable.scroller?.destroy(); this.songsTable = null; }
         const songs = this.musicLibrary.sortedSongs;
 
         if (songs.length === 0 && this.musicLibrary.scanState !== 'scanning') {
@@ -5137,6 +5217,7 @@ class ZuneExplorer {
         // Fresh creation: clear container and build scroller + listeners
         this.clearElement(container);
         if (this.songsScroller) { this.songsScroller.destroy(); this.songsScroller = null; }
+        container.appendChild(this._songsLayoutBar('list'));
 
         // Wrapper: alpha rail on left, songs list on right
         const wrapper = document.createElement('div');
@@ -5164,6 +5245,8 @@ class ZuneExplorer {
                     el.draggable = true;
                     el.dataset.trackPath = track.path;
 
+                    el.appendChild(self._songPlayButton(track.path));
+
                     const info = document.createElement('div');
                     info.className = 'music-song-info';
                     const titleEl = document.createElement('div');
@@ -5188,6 +5271,13 @@ class ZuneExplorer {
 
         // Event delegation on the list container
         list.addEventListener('click', (e) => {
+            const playBtn = e.target.closest('.song-play-btn');
+            if (playBtn) {
+                e.stopPropagation();
+                const t = this.musicLibrary.tracks.get(playBtn.dataset.path);
+                if (t) this._songRowPlay({ ...t, path: playBtn.dataset.path }, this.musicLibrary.sortedSongs);
+                return;
+            }
             const row = e.target.closest('.vs-row');
             if (!row) return;
             const index = parseInt(row.dataset.index, 10);
@@ -5236,6 +5326,167 @@ class ZuneExplorer {
         wrapper.appendChild(rail);
         wrapper.appendChild(list);
         container.appendChild(wrapper);
+    }
+
+    /**
+     * iTunes-style table of every song: sortable columns, search, ▶/⏸.
+     * Rows are virtualised, so it stays quick with tens of thousands of songs.
+     */
+    renderMusicSongsTable(container) {
+        if (this.songsScroller) { this.songsScroller.destroy(); this.songsScroller = null; }
+        const COLS = [
+            ['play', ''], ['title', 'title'], ['duration', 'time'], ['artist', 'artist'], ['album', 'album'],
+            ['genre', 'genre'], ['year', 'year'], ['kbps', 'quality'], ['format', 'type'],
+        ];
+        const st = this.songsTable && container.contains(this.songsTable.root) ? this.songsTable : null;
+        // While the library is being read, batches arrive constantly; rebuilding
+        // and re-sorting 10,000+ rows each time would make the app sluggish.
+        if (st && this.musicLibrary.scanState === 'scanning') {
+            const wait = 1500 - (Date.now() - (st.lastBuild || 0));
+            if (wait > 0) {
+                clearTimeout(st.pending);
+                st.pending = setTimeout(() => { if (this.songsTable === st) this.renderMusicSongsTable(container); }, wait);
+                return;
+            }
+        }
+
+        const sizes = new Map(this.categorizedFiles.music.map(f => [f.path, f.size || 0]));
+        const kbpsFrom = window.songFixerLogic?.kbpsFrom || (() => 0);
+        const allRows = [];
+        for (const [path, t] of this.musicLibrary.tracks) {
+            const dur = t.duration || 0;
+            allRows.push({
+                path, title: t.title || '', artist: t.artist || '', album: t.album || '', genre: t.genre || '',
+                year: t.year || 0, duration: dur, kbps: kbpsFrom(sizes.get(path) || 0, dur),
+                format: (path.split('.').pop() || '').toLowerCase(),
+            });
+        }
+
+        if (!st) {
+            this.clearElement(container);
+            const root = document.createElement('div');
+            root.className = 'songs-table-root';
+
+            const top = document.createElement('div');
+            top.className = 'songs-table-top';
+            top.appendChild(this._songsLayoutBar('table'));
+            const search = document.createElement('input');
+            search.className = 'zune-diff-filter-input songs-table-search';
+            search.placeholder = 'search songs, artists, albums\u2026';
+            const count = document.createElement('span');
+            count.className = 'songs-table-count';
+            top.append(search, count);
+            root.appendChild(top);
+
+            const head = document.createElement('div');
+            head.className = 'songs-table-row songs-table-head';
+            root.appendChild(head);
+
+            const body = document.createElement('div');
+            body.className = 'songs-table-body';
+            root.appendChild(body);
+            container.appendChild(root);
+
+            const state = { root, head, body, search, count, rows: [], view: [], sortKey: 'title', sortDir: 1, query: '' };
+            this.songsTable = state;
+
+            const self = this;
+            state.scroller = new VirtualScroller({
+                container: body,
+                rowTypes: { trow: { height: 34, className: 'songs-table-row' } },
+                renderRow(el, index, entry) {
+                    while (el.firstChild) el.removeChild(el.firstChild);
+                    const r = entry.data;
+                    el.dataset.trackPath = r.path;
+                    el.draggable = true;
+                    for (const [key] of COLS) {
+                        const cell = document.createElement('div');
+                        cell.className = 'songs-table-cell col-' + key;
+                        if (key === 'play') cell.appendChild(self._songPlayButton(r.path));
+                        else if (key === 'duration') cell.textContent = r.duration ? self.formatDuration(r.duration) : '';
+                        else if (key === 'kbps') cell.textContent = r.kbps ? r.kbps + ' kbps' : '';
+                        else if (key === 'year') cell.textContent = r.year || '';
+                        else cell.textContent = r[key] || '';
+                        if (key !== 'play') cell.title = cell.textContent;
+                        el.appendChild(cell);
+                    }
+                },
+                overscan: 20,
+            });
+
+            search.addEventListener('input', () => { state.query = search.value.trim().toLowerCase(); this._songsTableUpdate(false); });
+            head.addEventListener('click', (e) => {
+                const h = e.target.closest('[data-key]');
+                if (!h) return;
+                if (state.sortKey === h.dataset.key) state.sortDir = -state.sortDir;
+                else { state.sortKey = h.dataset.key; state.sortDir = h.dataset.key === 'kbps' || h.dataset.key === 'year' ? -1 : 1; }
+                this._songsTableUpdate(false);
+            });
+            body.addEventListener('click', (e) => {
+                const btn = e.target.closest('.song-play-btn');
+                if (!btn) return;
+                e.stopPropagation();
+                const r = state.view.find(x => x.path === btn.dataset.path);
+                if (r) this._songRowPlay(r, state.view);
+            });
+            body.addEventListener('dblclick', (e) => {
+                const row = e.target.closest('.vs-row');
+                if (!row || e.target.closest('.song-play-btn')) return;
+                const r = state.view.find(x => x.path === row.dataset.trackPath);
+                if (r) this._songRowPlay(r, state.view);
+            });
+            body.addEventListener('contextmenu', (e) => {
+                const row = e.target.closest('.vs-row');
+                if (!row) return;
+                const t = this.musicLibrary.tracks.get(row.dataset.trackPath);
+                if (t) this.showMusicItemContextMenu(e, [this.getTrackFile({ ...t, path: row.dataset.trackPath })]);
+            });
+            body.addEventListener('dragstart', (e) => {
+                const row = e.target.closest('.vs-row');
+                if (!row) return;
+                e.dataTransfer.setData('application/x-zune-paths', JSON.stringify([row.dataset.trackPath]));
+                e.dataTransfer.effectAllowed = 'copy';
+            });
+            state.COLS = COLS;
+        }
+
+        this.songsTable.rows = allRows;
+        this.songsTable.lastBuild = Date.now();
+        this._songsTableUpdate(!!st);
+    }
+
+    _songsTableUpdate(preserveScroll) {
+        const st = this.songsTable;
+        if (!st) return;
+        const q = st.query;
+        let view = q
+            ? st.rows.filter(r => r.title.toLowerCase().includes(q) || r.artist.toLowerCase().includes(q) ||
+                r.album.toLowerCase().includes(q) || r.genre.toLowerCase().includes(q))
+            : st.rows.slice();
+        const key = st.sortKey, dir = st.sortDir;
+        const numeric = key === 'duration' || key === 'year' || key === 'kbps';
+        const coll = this._collator || (this._collator = new Intl.Collator(undefined, { sensitivity: 'base', numeric: true }));
+        view.sort((a, b) => {
+            // Unknown / empty values always go last
+            if (!a[key] !== !b[key]) return a[key] ? -1 : 1;
+            const c = numeric ? (a[key] - b[key]) * dir : coll.compare(String(a[key] || ''), String(b[key] || '')) * dir;
+            return c || coll.compare(a.title, b.title);
+        });
+        st.view = view;
+
+        // Header with the active column marked
+        while (st.head.firstChild) st.head.removeChild(st.head.firstChild);
+        for (const [k, label] of st.COLS) {
+            const h = document.createElement('div');
+            h.className = 'songs-table-cell col-' + k + (k === key ? ' sorted' : '');
+            if (k !== 'play') {
+                h.dataset.key = k;
+                h.textContent = label + (k === key ? (dir > 0 ? ' \u25B4' : ' \u25BE') : '');
+            }
+            st.head.appendChild(h);
+        }
+        st.count.textContent = `${view.length} song${view.length === 1 ? '' : 's'}`;
+        st.scroller.setData(view.map(r => ({ type: 'trow', data: r })), { preserveScroll });
     }
 
     renderMusicArtistsView(container) {

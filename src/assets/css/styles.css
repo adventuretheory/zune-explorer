@@ -4395,3 +4395,46 @@ body.platform-linux .now-playing-panel {
 .song-fixer-editor { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; max-width: 560px; }
 .song-fixer-edit-input { padding: 6px 10px; font-size: 13px; }
 .song-fixer-edit-buttons { display: flex; gap: 18px; }
+
+/* Sort menus (Zune lists, song fixer, songs table) */
+.zune-diff-sort-row { align-items: center; gap: 8px; margin: 2px 0 6px; font-size: 12px; color: var(--zune-text-dim); }
+.song-sort-select {
+  background: #1a1a1a; color: #ddd; border: 1px solid #333; border-radius: 4px;
+  font-family: inherit; font-size: 12px; padding: 3px 6px;
+}
+.song-sort-select:focus { outline: none; border-color: var(--zune-orange); }
+
+/* Songs: list / table switch */
+.songs-layout-bar { display: flex; gap: 14px; margin: 0 0 8px 4px; }
+.songs-layout-btn {
+  background: none; border: none; padding: 2px 0; cursor: pointer; font-family: inherit;
+  font-size: 13px; color: var(--zune-text-dim); text-transform: lowercase; border-bottom: 2px solid transparent;
+}
+.songs-layout-btn.active { color: #fff; border-bottom-color: var(--zune-orange); }
+.music-song-row .song-play-btn { margin-right: 10px; }
+
+/* Songs table (iTunes-style) */
+.songs-table-root { display: flex; flex-direction: column; max-height: calc(100vh - 260px); }
+.songs-table-top { display: flex; align-items: center; gap: 16px; margin-bottom: 6px; }
+.songs-table-top .songs-layout-bar { margin: 0; }
+.songs-table-search { max-width: 420px; padding: 6px 10px; font-size: 13px; }
+.songs-table-count { font-size: 12px; color: var(--zune-text-dim); }
+.songs-table-row {
+  display: grid; align-items: center;
+  grid-template-columns: 40px minmax(160px, 2.2fr) 56px minmax(120px, 1.4fr) minmax(120px, 1.6fr) minmax(70px, 0.9fr) 48px 72px 44px;
+  column-gap: 12px; padding: 0 8px; box-sizing: border-box;
+  font-size: 13px; color: #ddd; border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.songs-table-body .songs-table-row { height: 34px; }
+.songs-table-body .songs-table-row:hover { background: rgba(255,255,255,0.06); }
+.songs-table-head {
+  height: 30px; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--zune-text-dim);
+  border-bottom: 1px solid #333; user-select: none;
+}
+.songs-table-head [data-key] { cursor: pointer; }
+.songs-table-head [data-key]:hover, .songs-table-head .sorted { color: #fff; }
+.songs-table-cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.songs-table-cell.col-duration, .songs-table-cell.col-year, .songs-table-cell.col-kbps { text-align: right; font-variant-numeric: tabular-nums; }
+.songs-table-cell.col-artist, .songs-table-cell.col-album, .songs-table-cell.col-genre, .songs-table-cell.col-format { color: #aaa; }
+.songs-table-row .song-play-btn { width: 24px; height: 24px; font-size: 9px; margin: 0; }
+.songs-table-body { overflow-y: auto; position: relative; flex: 1; scrollbar-width: thin; scrollbar-color: #333 transparent; }

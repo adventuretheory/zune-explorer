@@ -27,7 +27,7 @@ function suspectReasons(track, filePath) {
   const isJunk = (v) => !v || PLACEHOLDER_RE.test(v) || GUID_RE.test(v);
 
   if (isJunk(title)) reasons.push('no title');
-  else if (title === fileStem(filePath) && /[_]|^\d+[\s._-]/.test(title)) reasons.push('title is a filename');
+  else if (title === fileStem(filePath) && (/_/.test(title) || TRACK_NO_RE.test(title))) reasons.push('title is a filename');
   else if (/_/.test(title) && !/\s/.test(title)) reasons.push('title is a filename');
 
   if (isJunk(artist)) reasons.push('no artist');
@@ -721,7 +721,68 @@ function cleanupProposal(current, filePath, knownArtists) {
   return proposal;
 }
 
+// ---------------------------------------------------------------------------
+// Sorting song lists (Zune lists, fixer, songs table)
+// ---------------------------------------------------------------------------
+
+const SORT_OPTIONS = [
+  ['title', 'title (a–z)'],
+  ['artist', 'artist (a–z)'],
+  ['album', 'album (a–z)'],
+  ['longest', 'longest first'],
+  ['shortest', 'shortest first'],
+  ['best', 'best quality first'],
+  ['worst', 'lowest quality first'],
+  ['largest', 'largest file first'],
+  ['messy', 'messy first (no album, junk names)'],
+];
+
+/** kbps from size (bytes) and duration (seconds); 0 if unknown. */
+function kbpsFrom(size, durationSec) {
+  return size > 0 && durationSec > 0 ? Math.round((size * 8) / durationSec / 1000) : 0;
+}
+
+/**
+ * Sort songs. `get(item)` returns { title, artist, album, duration (s),
+ * size, path }. Returns a new array; the input is left alone.
+ */
+function sortSongs(items, key, get) {
+  const textCmp = (a, b) => {
+    // Empty / placeholder values go last when sorting by name
+    const ea = !a || PLACEHOLDER_RE.test(a), eb = !b || PLACEHOLDER_RE.test(b);
+    if (ea !== eb) return ea ? 1 : -1;
+    return String(a).localeCompare(String(b), undefined, { sensitivity: 'base', numeric: true });
+  };
+  const rows = items.map(item => {
+    const v = get(item) || {};
+    const duration = Number(v.duration) || 0;
+    return {
+      item,
+      title: clean(v.title), artist: clean(v.artist), album: clean(v.album),
+      duration, size: Number(v.size) || 0, kbps: kbpsFrom(Number(v.size) || 0, duration),
+      messy: key === 'messy' ? suspectReasons({ title: v.title, artist: v.artist, album: v.album }, v.path || '').length : 0,
+    };
+  });
+  const byTitle = (a, b) => textCmp(a.title, b.title);
+  const unknownLast = (x, y) => (x ? 0 : 1) - (y ? 0 : 1);
+  const cmp = {
+    title: byTitle,
+    artist: (a, b) => textCmp(a.artist, b.artist) || textCmp(a.album, b.album) || byTitle(a, b),
+    album: (a, b) => textCmp(a.album, b.album) || byTitle(a, b),
+    longest: (a, b) => unknownLast(a.duration, b.duration) || b.duration - a.duration || byTitle(a, b),
+    shortest: (a, b) => unknownLast(a.duration, b.duration) || a.duration - b.duration || byTitle(a, b),
+    best: (a, b) => unknownLast(a.kbps, b.kbps) || b.kbps - a.kbps || byTitle(a, b),
+    worst: (a, b) => unknownLast(a.kbps, b.kbps) || a.kbps - b.kbps || byTitle(a, b),
+    largest: (a, b) => b.size - a.size || byTitle(a, b),
+    messy: (a, b) => b.messy - a.messy || byTitle(a, b),
+  }[key] || byTitle;
+  return rows.sort(cmp).map(r => r.item);
+}
+
 const songFixerLogic = {
+  SORT_OPTIONS,
+  sortSongs,
+  kbpsFrom,
   cleanTagText,
   proposeCleanTags,
   cleanupProposal,

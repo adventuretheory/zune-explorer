@@ -12,6 +12,7 @@ class SongFixerView {
     this.mode = 'fix';          // 'fix' | 'all' | 'dupes' | 'zune-dupes'
     this.dupeChoice = new Map(); // duplicate id -> ticked for deletion (default: all but the keeper)
     this.dupeKind = 'identical'; // which duplicate groups to show: 'identical' | 'different'
+    this.sortKey = 'title';      // order of the needs fixing / all songs lists
     this.filter = '';
     this.limit = PAGE_SIZE;
     this.running = false;
@@ -41,9 +42,32 @@ class SongFixerView {
 
   _visible() {
     const q = this.filter.trim().toLowerCase();
-    return this.items.filter(i =>
+    const list = this.items.filter(i =>
       (this.mode === 'all' || i.reasons.length > 0 || i.state !== 'idle') &&
       (!q || [i.track.title, i.track.artist, i.track.album, i.path].some(v => String(v || '').toLowerCase().includes(q))));
+    if (!this._sizes || this._sizes.size !== (this.explorer.categorizedFiles?.music || []).length) {
+      this._sizes = new Map((this.explorer.categorizedFiles?.music || []).map(f => [f.path, f.size || 0]));
+    }
+    return window.songFixerLogic.sortSongs(list, this.sortKey, (i) => ({
+      title: i.track.title, artist: i.track.artist, album: i.track.album,
+      duration: i.track.duration || 0, size: this._sizes.get(i.path) || 0, path: i.path,
+    }));
+  }
+
+  _sortMenu(onChange) {
+    const row = this._el('div', 'zune-diff-sort-row song-fixer-sort');
+    row.style.display = 'flex';
+    row.appendChild(this._el('span', null, 'sort'));
+    const sel = this._el('select', 'song-sort-select');
+    for (const [value, label] of window.songFixerLogic.SORT_OPTIONS) {
+      const opt = this._el('option', null, label);
+      opt.value = value;
+      sel.appendChild(opt);
+    }
+    sel.value = this.sortKey;
+    sel.addEventListener('change', () => { this.sortKey = sel.value; this.limit = PAGE_SIZE; onChange(); });
+    row.appendChild(sel);
+    return row;
   }
 
   _proposal(item) {
@@ -266,6 +290,8 @@ class SongFixerView {
       wrap.appendChild(this._el('div', 'zune-diff-empty', this.mode === 'all' ? 'no songs match' : 'no songs need fixing — nice'));
       return;
     }
+
+    wrap.appendChild(this._sortMenu(() => this._drawList()));
 
     // Select all (visible)
     const all = this._el('label', 'zune-diff-select-all');
