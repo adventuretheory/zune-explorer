@@ -119,7 +119,7 @@ class SongFixer {
     const body = new URLSearchParams({
       client: apiKey,
       format: 'json',
-      duration: String(Math.round(duration)),
+      duration: String(Math.max(1, Math.round(Number(duration) || 0))),
       fingerprint,
       meta: 'recordings releasegroups releases tracks compress',
     }).toString();
@@ -182,10 +182,16 @@ class SongFixer {
       current = { title: '', artist: '', album: '', duration: 0 };
     }
 
+    // Some files have no usable length in their header (or a bogus one);
+    // AcoustID needs a real one, so measure it from the audio itself.
+    if (!(Number.isFinite(current.duration) && current.duration >= 1)) {
+      current.duration = await this.measureDuration(filePath);
+    }
+
     // 1. Listen to the audio (needs an AcoustID key and a readable length).
     // A "hint" search uses the person's own typed title and skips this.
     let soundError = null;
-    if (apiKey && current.duration && !libraryTrack.hint) {
+    if (apiKey && current.duration >= 1 && !libraryTrack.hint) {
       try {
         const fp = await this.fingerprint(filePath);
         const response = await this._acoustidLookup(apiKey, fp, current.duration);
@@ -201,9 +207,40 @@ class SongFixer {
     // 2. Fall back to the words in the title (or file name)
     const proposal = await this._identifyByTitle(filePath, current, libraryTrack);
     if (proposal) return { current, proposal };
-    // Neither worked: say why the sound check couldn't run, if it failed
-    if (soundError) throw soundError;
-    return { current, proposal: null, triedSound: !!(apiKey && current.duration) };
+    // Neither worked. A failed sound check isn't an error for the person:
+    // the song just wasn't recognised; say why as a note.
+    return {
+      current, proposal: null,
+      triedSound: !!(apiKey && current.duration >= 1),
+      note: soundError ? `couldn\u2019t check the sound (${soundError.message.replace(/^AcoustID:\s*/, '')})` : null,
+    };
+  }
+
+  /**
+   * Song length in seconds, worked out by ffmpeg: first from the container
+   * ("Duration: 00:03:21.45"), else by reading through the audio. 0 if unknown.
+   */
+  async measureDuration(filePath) {
+    const run = (args) => new Promise((resolve) => {
+      const proc = spawn(this.ffmpegPath, args);
+      let err = '';
+      proc.stderr.on('data', (c) => { err += c; if (err.length > 200000) err = err.slice(-100000); });
+      proc.on('error', () => resolve(''));
+      proc.on('close', () => resolve(err));
+    });
+    const toSec = (h, m, s) => Number(h) * 3600 + Number(m) * 60 + Number(s);
+    let out = await run(['-hide_banner', '-i', filePath]);
+    let m = out.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+    if (m && toSec(m[1], m[2], m[3]) >= 1) return toSec(m[1], m[2], m[3]);
+    // No usable header: decode it (fast, no output) and take the last position
+    out = await run(['-hide_banner', '-nostats', '-progress', 'pipe:2', '-i', filePath, '-vn', '-f', 'null', '-']);
+    const times = [...out.matchAll(/out_time=(\d+):(\d+):(\d+(?:\.\d+)?)/g)];
+    if (times.length) {
+      const t = times[times.length - 1];
+      const sec = toSec(t[1], t[2], t[3]);
+      if (sec >= 1) return sec;
+    }
+    return 0;
   }
 
   async _identifyByTitle(filePath, current, libraryTrack) {

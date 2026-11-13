@@ -201,3 +201,33 @@ test('trash reports files already gone, and never deletes a copy whose kept copy
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('a song with no usable length in its header gets measured, so AcoustID gets a real duration', { skip: !haveFfmpeg && 'ffmpeg binary not installed' }, async () => {
+  const { SongFixer } = require('../src/main/song-fixer.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'songfixer-'));
+  try {
+    const song = path.join(dir, 'song.mp3');
+    execFileSync(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'sine=f=220:d=12',
+      '-c:a', 'libmp3lame', '-write_xing', '0', '-y', song]);
+    const sf = new SongFixer({ ffmpegPath, dataDir: dir, searchRecordings: async () => ({ recordings: [] }) });
+
+    const measured = await sf.measureDuration(song);
+    assert.ok(Math.abs(measured - 12) < 0.5, `measured ${measured}`);
+
+    // Pretend the header reported nonsense
+    sf.readTags = async () => ({ title: 'x', artist: '', album: '', duration: Infinity });
+    let sentDuration = null;
+    sf._acoustidLookup = async (key, fp, duration) => { sentDuration = duration; return { status: 'ok', results: [] }; };
+    const r = await sf.identify(song, 'somekey');
+    assert.ok(Math.abs(sentDuration - 12) < 0.5, `sent ${sentDuration}`);
+    assert.equal(r.proposal, null);
+
+    // A sound-check failure is a note on "not recognised", not an error
+    sf._acoustidLookup = async () => { throw new Error('AcoustID: missing required parameter "duration"'); };
+    const r2 = await sf.identify(song, 'somekey');
+    assert.equal(r2.proposal, null);
+    assert.match(r2.note, /couldn.t check the sound \(missing required parameter "duration"\)/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

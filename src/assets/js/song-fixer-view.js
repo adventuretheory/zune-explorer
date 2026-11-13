@@ -330,7 +330,8 @@ class SongFixerView {
         line.textContent = 'listening…';
         return line;
       case 'none':
-        line.textContent = this.hasKey ? 'not recognised by sound or title' : 'not found by title';
+        line.textContent = (this.hasKey ? 'not recognised by sound or title' : 'not found by title') +
+          (item.note ? ` \u00b7 ${item.note}` : '') + ' \u2014 try \u201cclean up names\u201d or \u201cedit\u201d';
         line.classList.add('dim');
         return line;
       case 'error':
@@ -770,6 +771,7 @@ class SongFixerView {
         }
       } else if (!res.proposal) {
         item.state = 'none';
+        item.note = res.note || null;
         none++;
       } else {
         item.result = res;
