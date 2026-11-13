@@ -43,7 +43,9 @@ class SongFixerView {
   _visible() {
     const q = this.filter.trim().toLowerCase();
     const list = this.items.filter(i =>
-      (this.mode === 'all' || i.reasons.length > 0 || i.state !== 'idle') &&
+      // Fixed songs leave "needs fixing" (they're still under "all songs"),
+      // so select all / delete only cover what's left
+      (this.mode === 'all' || (i.state !== 'applied' && (i.reasons.length > 0 || i.state !== 'idle'))) &&
       (!q || [i.track.title, i.track.artist, i.track.album, i.path].some(v => String(v || '').toLowerCase().includes(q))));
     if (!this._sizes || this._sizes.size !== (this.explorer.categorizedFiles?.music || []).length) {
       this._sizes = new Map((this.explorer.categorizedFiles?.music || []).map(f => [f.path, f.size || 0]));
@@ -120,7 +122,7 @@ class SongFixerView {
       return;
     }
 
-    const suspects = this.items.filter(i => i.reasons.length > 0).length;
+    const suspects = this.items.filter(i => i.reasons.length > 0 && i.state !== 'applied').length;
     const summary = this._el('div', 'zune-diff-summary song-fixer-summary');
     summary.appendChild(this._el('span', 'zune-diff-stat zune-diff-stat-push', `${suspects} songs need fixing`));
     summary.appendChild(this._el('span', 'zune-diff-stat', `${this.items.length} songs in library`));
@@ -929,7 +931,8 @@ class SongFixerView {
     // The scan results arrive through the library's normal scan handler
     await new Promise(r => setTimeout(r, 300));
     this._loadItems();
-    if (this.container?.isConnected) this._drawList();
+    // Whole page, so the "N songs need fixing" count updates too
+    if (this.container?.isConnected) this._draw();
   }
 }
 
