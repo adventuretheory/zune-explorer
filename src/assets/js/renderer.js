@@ -2956,6 +2956,10 @@ class ZuneExplorer {
                 return;
             }
 
+            // Everything below is app navigation / playback; while typing in a
+            // text box, Space, Backspace and the arrows belong to the text box
+            if (this._isTyping(e)) return;
+
             // Space bar toggles play/pause when player is active
             if (e.key === ' ' && this.audioPlayer && this.audioPlayer.isPlaying !== undefined && this.audioPlayer.queue.length > 0 && this.currentView !== 'menu') {
                 e.preventDefault();
@@ -3104,7 +3108,15 @@ class ZuneExplorer {
         }, 3500);
     }
 
+    _isTyping(e) {
+        const el = e?.target instanceof Element ? e.target : document.activeElement;
+        return !!(el && (['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName) || el.isContentEditable));
+    }
+
     handleMenuKeyboard(e) {
+        // Keys typed into a text box (e.g. editing a song) are for the text box,
+        // not app navigation: Backspace deletes, arrows move the cursor
+        if (this._isTyping(e)) return;
         switch(e.key) {
             case 'ArrowDown':
                 e.preventDefault();
@@ -3127,6 +3139,9 @@ class ZuneExplorer {
     }
 
     handleContentKeyboard(e) {
+        // Keys typed into a text box (e.g. editing a song) are for the text box,
+        // not app navigation: Backspace deletes, arrows move the cursor
+        if (this._isTyping(e)) return;
         switch(e.key) {
             case 'Escape':
             case 'Backspace':
