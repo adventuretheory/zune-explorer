@@ -132,6 +132,15 @@ class SettingsView {
         onClick: () => this.push({ title: 'picture folders', buildItems: () => this._folderListItems('pictures') }),
       },
       {
+        kind: 'action',
+        label: 'rescan music folders now',
+        onClick: async () => {
+          this.explorer.showToast?.('rescanning your music folders\u2026');
+          const ok = await this.explorer.rescanMusicLibrary?.();
+          this.explorer.showToast?.(ok === false ? 'a scan is already running' : `music library rescanned \u2014 ${this.explorer.musicLibrary.tracks.size} songs`);
+        },
+      },
+      {
         kind: 'nav',
         label: 'fix songs & find duplicates',
         onClick: () => {

@@ -397,6 +397,8 @@ function dupeIdentity(it, knownTitles) {
       artist = rest.length === 1 && !isJunkArtist(rest[0]) ? rest[0] : '';
     }
   }
+  // A file-name title with a copy number ("Song (2)") is the same song
+  if (!clean(it.artist) || isJunkArtist(it.artist) || /\s-\s/.test(clean(it.title))) title = title.replace(/\s\(\d{1,2}\)$/, '');
   title = title.replace(/^[\s\-–]+|[\s\-–]+$/g, '');
   return { title, artist };
 }

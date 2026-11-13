@@ -349,3 +349,16 @@ test('a stale link to a deleted Zune copy falls back to the other ways of matchi
   const plan = L.planZuneUpdate(pending, device, new Map([['/m/s.mp3', { title: 'Song', artist: 'A', album: 'new' }]]), { linked: new Map([['/m/s.mp3', 12345]]) });
   assert.deepEqual(plan.replace, [{ path: '/m/s.mp3', handle: 9 }]);
 });
+
+test('numbered copies ("Song (2)") made by repeated copying group with the original', () => {
+  const G = '{09316835-3188-481c-a359-0f8d2a937ac8}';
+  const mk = (id, n) => ({ id, title: `${G} - 8-Bit Trip${n ? ` (${n})` : ''}`, artist: 'Unknown Artist', album: 'Unknown Album', duration: 180, size: 4e6, where: `/Music/${G} - 8-Bit Trip${n ? ` (${n})` : ''}.mp3` });
+  const groups = L.findDuplicateGroups([mk('a'), mk('b', 2), mk('c', 3), mk('d', 4),
+    // A real song whose title ends in a number in brackets stays itself
+    { id: 'x', title: 'Track (2)', artist: 'Band', album: 'A', duration: 100, where: '/m/x.mp3' },
+    { id: 'y', title: 'Track', artist: 'Band', album: 'A', duration: 100, where: '/m/y.mp3' }]);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].title, '8-Bit Trip');
+  assert.equal(groups[0].items.length, 4);
+  assert.equal(groups[0].keepId, 'a'); // the un-numbered one; the others "look like a copy"
+});

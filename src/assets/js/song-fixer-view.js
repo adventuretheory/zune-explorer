@@ -100,6 +100,21 @@ class SongFixerView {
     const summary = this._el('div', 'zune-diff-summary song-fixer-summary');
     summary.appendChild(this._el('span', 'zune-diff-stat zune-diff-stat-push', `${suspects} songs need fixing`));
     summary.appendChild(this._el('span', 'zune-diff-stat', `${this.items.length} songs in library`));
+    const rescan = this._el('button', 'zune-rescan-link', 'rescan music folders');
+    rescan.title = 'read your music folders again: finds new files and drops moved or deleted ones';
+    rescan.addEventListener('click', async () => {
+      if (this.running) return;
+      this.running = true;
+      this._setStatus('rescanning your music folders \u2014 this can take a few minutes with a big library\u2026');
+      rescan.disabled = true;
+      const ok = await this.explorer.rescanMusicLibrary?.();
+      this.running = false;
+      this.dupeChoice.clear();
+      this._loadItems();
+      this._setStatus(ok === false ? 'a scan is already running \u2014 try again in a moment.' : `rescanned: ${this.items.length} songs in your library.`);
+      this._draw();
+    });
+    summary.appendChild(rescan);
     c.appendChild(summary);
 
     // Which songs to list
@@ -544,6 +559,13 @@ class SongFixerView {
   // ---- deleting from the computer -------------------------------------------
 
   async _deleteLocal(paths, { removeFromZune, keepers }) {
+    // Large deletes get an extra, explicit question (they're easy to trigger
+    // by accident with "select all")
+    if (paths.length > 50 && !window.confirm(
+      `Move ${paths.length} songs to the Trash?\n\nThat's a lot of songs. You can put them back from the Trash, but check that this is what you meant.`)) {
+      this._setStatus('nothing deleted.');
+      return;
+    }
     this.running = true;
     this._setStatus(`moving ${paths.length} song${paths.length === 1 ? '' : 's'} to the trash\u2026`);
     const res = await window.electronAPI.songFixerTrash(paths, { removeFromZune, keepers });

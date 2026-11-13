@@ -3657,6 +3657,36 @@ class ZuneExplorer {
         }
     }
 
+    /**
+     * Read the music folders again: pick up new files, drop ones that were
+     * moved or deleted, and re-read every song's tags.
+     */
+    async rescanMusicLibrary() {
+        if (this.musicLibrary.scanState === 'scanning') return false;
+        const lib = this.preferences?.library || {};
+        this.categorizedFiles.music = [];
+        this.extensionlessFiles = [];
+        for (const dir of lib.music || []) {
+            await this.scanDirectoryRecursive(dir, 'music');
+        }
+        if (lib.scanDesktopAndDownloads) {
+            const sep = this.platform === 'win32' ? '\\' : '/';
+            for (const dir of [`${this.homePath}${sep}Desktop`, `${this.homePath}${sep}Downloads`]) {
+                await this.scanDirectoryForMedia(dir);
+            }
+        }
+        // Forget songs whose files are no longer there
+        const present = new Set(this.categorizedFiles.music.map(f => f.path));
+        for (const p of [...this.musicLibrary.tracks.keys()]) {
+            if (!present.has(p)) this.musicLibrary.tracks.delete(p);
+        }
+        this.rebuildMusicIndexes();
+        this.musicLibrary.scanState = 'idle';
+        await this.scanMusicLibrary();
+        this._refreshCurrentView();
+        return true;
+    }
+
     async scanMediaFiles() {
         const lib = this.preferences?.library || {};
         const categoryDirs = {
