@@ -360,7 +360,9 @@ class SongFixerView {
       if (idx) line.appendChild(document.createTextNode(' — '));
       const removed = clears.includes(field) && !value;
       const changed = removed || changes.some(c => c.field === field);
-      line.appendChild(this._el('span', changed ? 'song-fixer-changed' : '', removed ? `(${field} removed)` : (value || '?')));
+      const span = this._el('span', changed ? 'song-fixer-changed' : '', removed ? `no ${field}` : (value || '?'));
+      if (removed) span.title = `the junk ${field} (e.g. a website name) will be left empty`;
+      line.appendChild(span);
     });
     const extra = [p.year, p.trackNumber ? `track ${p.trackNumber}` : null].filter(Boolean).join(', ');
     if (extra) line.appendChild(document.createTextNode(` (${extra})`));
