@@ -4093,7 +4093,52 @@ class ZuneExplorer {
             items.push({ separator: true });
             items.push(...extraItems);
         }
+        items.push({ separator: true }, ...this.songFileMenuItems(tracks.map(t => t.path).filter(Boolean)));
         this.showDynamicContextMenu(e, items);
+    }
+
+    /** "Show in Finder" and "Move to Trash" for songs on this computer. */
+    songFileMenuItems(paths) {
+        if (!paths.length) return [];
+        const finder = this.platform === 'darwin' ? 'Show in Finder' : this.platform === 'win32' ? 'Show in Explorer' : 'Show in Folder';
+        const items = [];
+        if (paths.length === 1) items.push({ label: finder, action: () => window.electronAPI.showItemInFolder(paths[0]) });
+        items.push({
+            label: paths.length === 1 ? 'Move to Trash\u2026' : `Move ${paths.length} Songs to Trash\u2026`,
+            action: () => this.trashSongs(paths),
+        });
+        return items;
+    }
+
+    /**
+     * Move songs to the Trash (after asking), drop them from the library and
+     * every list, and queue their Zune copies for removal by "update zune".
+     */
+    async trashSongs(paths) {
+        const first = this.musicLibrary.tracks.get(paths[0]);
+        const what = paths.length === 1 ? `\u201c${first?.title || paths[0].split(/[/\\]/).pop()}\u201d` : `${paths.length} songs`;
+        if (!window.confirm(`Move ${what} to the Trash?\n\nYou can put ${paths.length === 1 ? 'it' : 'them'} back from the Trash. ` +
+            `If ${paths.length === 1 ? 'it\u2019s' : 'they\u2019re'} on your Zune, the copy there is removed the next time you press \u201cupdate zune\u201d.`)) return;
+        const res = await window.electronAPI.songFixerTrash(paths, { removeFromZune: true });
+        if (!res.success) { this.showToast?.('couldn\u2019t move to the Trash: ' + res.error); return; }
+        const gone = new Set([...res.trashed, ...(res.missing || [])]);
+        for (const p of gone) this.musicLibrary.tracks.delete(p);
+        this.categorizedFiles.music = this.categorizedFiles.music.filter(f => !gone.has(f.path));
+        this.rebuildMusicIndexes();
+        if (this.currentCategory === 'music') this.renderMusicSubContent();
+        const fixer = this.settingsView?.songFixer;
+        if (fixer?.items) {
+            fixer.items = fixer.items.filter(i => !gone.has(i.path));
+            if (fixer.container?.isConnected) fixer._draw();
+        }
+        if (this.zunePanel?.diffActive) {
+            this.zunePanel._computeDiff();
+            this.zunePanel._renderDiffSummary();
+            this.zunePanel._destroyDiffScroller();
+            this.zunePanel._renderDiffList();
+        }
+        const failed = res.failed?.length || 0;
+        this.showToast?.(`${res.trashed.length} moved to the Trash` + (failed ? `, ${failed} couldn\u2019t be moved (${res.failed[0].error})` : ''));
     }
 
     buildPlaylistSubmenuItems(tracks) {

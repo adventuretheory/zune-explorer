@@ -346,6 +346,7 @@ class SongFixerView {
     }
     row.appendChild(this._playButton(item.path));
     row.appendChild(info);
+    row.addEventListener('contextmenu', (e) => this._songMenu(e, item.path));
     return row;
   }
 
@@ -441,6 +442,16 @@ class SongFixerView {
       this.explorer.playPath?.(filePath);
     });
     return b;
+  }
+
+  /** Right-click: Show in Finder / Move to Trash (plus playlist options). */
+  _songMenu(e, filePath) {
+    e.preventDefault();
+    const ex = this.explorer;
+    const t = ex.musicLibrary.tracks.get(filePath) || {};
+    if (ex.showMusicItemContextMenu) {
+      ex.showMusicItemContextMenu(e, [{ path: filePath, name: filePath.split(/[/\\]/).pop(), title: t.title, artist: t.artist, album: t.album, duration: t.duration }]);
+    }
   }
 
   /** Two-click button: the first click asks, the second within 4s acts. */
@@ -688,7 +699,10 @@ class SongFixerView {
           why.appendChild(document.createTextNode(it.bad.join(', ')));
         }
         info.appendChild(why);
-        if (!onZune) row.appendChild(this._playButton(it.id));
+        if (!onZune) {
+          row.appendChild(this._playButton(it.id));
+          row.addEventListener('contextmenu', (e) => this._songMenu(e, it.id));
+        }
         row.appendChild(info);
         list.appendChild(row);
       }
