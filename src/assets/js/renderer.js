@@ -2916,6 +2916,13 @@ class ZuneExplorer {
                 if (this.zunePanel) {
                     this.zunePanel._closeDiff();
                 }
+                // Clicking a section (music, videos, settings…) goes straight
+                // there, instead of only closing the Zune list first
+                const item = e.target.closest('.menu-item');
+                if (item) {
+                    const index = [...document.querySelectorAll('.menu-item')].indexOf(item);
+                    if (index >= 0) this.selectCategory(index);
+                }
             }
         }, true);
 
@@ -3210,7 +3217,7 @@ class ZuneExplorer {
 
     showContent() {
         const container = document.getElementById('panoramic-container');
-        container.classList.remove('show-recent');
+        container.classList.remove('show-recent', 'show-sync');
         container.classList.add('show-content');
         this.currentView = 'content';
 
