@@ -797,12 +797,18 @@ function pullBaseName(filename, metadata) {
 
 // Was this song already copied here on an earlier run? Same name and the same
 // length (within 2 s) — then don't copy it again as "Song (2).mp3".
+// Where a copied song lands: "Artist - Title" plus its final extension
+// (WMA is converted to MP3).
+function pullTargetPath(destDir, filename, metadata) {
+  let ext = path.extname(filename).toLowerCase() || '.mp3';
+  if (WMA_EXTENSIONS.has(ext)) ext = '.mp3';
+  return path.join(destDir, pullBaseName(filename, metadata) + ext);
+}
+
 async function findEarlierCopy(destDir, filename, metadata) {
   const durationMs = Number(metadata?.duration) || 0;
   if (!durationMs) return null;
-  let ext = path.extname(filename).toLowerCase() || '.mp3';
-  if (WMA_EXTENSIONS.has(ext)) ext = '.mp3';
-  const candidate = path.join(destDir, pullBaseName(filename, metadata) + ext);
+  const candidate = pullTargetPath(destDir, filename, metadata);
   try {
     const stats = await fs.stat(candidate);
     const { parseFile } = await import('music-metadata');
@@ -813,11 +819,57 @@ async function findEarlierCopy(destDir, filename, metadata) {
   return null;
 }
 
-ipcMain.handle('zune-pull-file', async (event, handle, filename, destDir, metadata) => {
+// Before a copy: which songs would land on a file name that's already taken
+// by something that isn't the same song (same length)?
+ipcMain.handle('zune-pull-check', async (event, destDir, items) => {
+  const conflicts = [];
+  if (typeof destDir !== 'string' || !Array.isArray(items)) return { conflicts };
+  for (let i = 0; i < items.length; i++) {
+    const { filename, metadata } = items[i] || {};
+    if (typeof filename !== 'string') continue;
+    const target = pullTargetPath(destDir, filename, metadata);
+    try { await fs.access(target); } catch { continue; } // free
+    if (await findEarlierCopy(destDir, filename, metadata)) continue; // same song: skipped anyway
+    conflicts.push({ index: i, name: path.basename(target) });
+  }
+  return { conflicts };
+});
+
+// Ask once what to do with name clashes. Returns 'skip' | 'keep' | 'replace' | 'cancel'.
+ipcMain.handle('zune-pull-ask-conflicts', async (event, conflicts) => {
+  const list = Array.isArray(conflicts) ? conflicts : [];
+  const shown = list.slice(0, 8).map(c => '\u2022 ' + c.name).join('\n') + (list.length > 8 ? `\n\u2026and ${list.length - 8} more` : '');
+  const { response } = await dialog.showMessageBox(mainWindow, {
+    type: 'question',
+    buttons: ['Skip them', 'Keep both', 'Replace', 'Cancel'],
+    defaultId: 0,
+    cancelId: 3,
+    message: `${list.length} song${list.length === 1 ? ' has' : 's have'} the same name as a different file already in that folder`,
+    detail: `${shown}\n\nSkip them: don't copy these songs.\nKeep both: save the new ones as "Song (2)".\nReplace: move the existing files to the Trash and save the new ones in their place.`,
+  });
+  return ['skip', 'keep', 'replace', 'cancel'][response] || 'cancel';
+});
+
+ipcMain.handle('zune-pull-file', async (event, handle, filename, destDir, metadata, onConflict = 'keep') => {
   const tempFiles = [];
   try {
     const earlier = await findEarlierCopy(destDir, filename, metadata);
     if (earlier) return { success: true, path: earlier.path, size: earlier.size, alreadyCopied: true };
+
+    // A different file already has this name: do what the person chose
+    const target = pullTargetPath(destDir, filename, metadata);
+    let taken = false;
+    try { await fs.access(target); taken = true; } catch { /* free */ }
+    if (taken && onConflict === 'skip') return { success: true, skipped: true, path: target };
+    // Where to save: the exact name when replacing (old file goes to the Trash), else a free name
+    const destFor = async (base, ext) => {
+      if (taken && onConflict === 'replace') {
+        const exact = path.join(destDir, base + ext);
+        try { await shell.trashItem(exact); } catch { /* already gone */ }
+        return exact;
+      }
+      return uniqueDestPath(destDir, base, ext);
+    };
 
     const data = await zuneManager.getFile(handle);
     if (!data || data.length === 0) {
@@ -841,7 +893,7 @@ ipcMain.handle('zune-pull-file', async (event, handle, filename, destDir, metada
 
     if (WMA_EXTENSIONS.has(ext)) {
       // Convert WMA → MP3 via ffmpeg
-      finalPath = await uniqueDestPath(destDir, baseName, '.mp3');
+      finalPath = await destFor(baseName, '.mp3');
 
       const ffArgs = ['-i', tempRaw];
 
@@ -898,7 +950,7 @@ ipcMain.handle('zune-pull-file', async (event, handle, filename, destDir, metada
       }
     } else {
       // MP3/AAC — just move to destination (already playable)
-      finalPath = await uniqueDestPath(destDir, baseName, ext);
+      finalPath = await destFor(baseName, ext);
       await fs.rename(tempRaw, finalPath).catch(async () => {
         // rename fails across filesystems, fall back to copy+delete
         await fs.copyFile(tempRaw, finalPath);

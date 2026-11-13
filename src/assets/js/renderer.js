@@ -2255,8 +2255,32 @@ class ZuneSyncPanel {
         }
 
         const handles = Array.from(this.diffSelectedHandles);
-        this.diffSelectedHandles.clear();
         const destDir = destResult.path;
+        const category = this.diffCategory;
+        const deviceItems = (this.browseData && this.browseData[category]) || [];
+        const deviceByHandle = new Map(deviceItems.map(i => [i.handle, i]));
+        const metaFor = (deviceItem, withArt = true) => category === 'music' ? {
+            title: deviceItem.title || null,
+            artist: deviceItem.artist || null,
+            album: deviceItem.album || null,
+            genre: deviceItem.genre || null,
+            trackNumber: deviceItem.trackNumber || null,
+            duration: deviceItem.duration || null, // ms; lets an earlier copy be recognised
+            albumArt: withArt ? this._getBrowseArt(deviceItem) : null,
+        } : {};
+
+        // Ask once, up front, what to do when a song's file name is already
+        // taken by a different file (same-length copies are skipped anyway)
+        let onConflict = 'keep';
+        const check = await window.electronAPI.zunePullCheck(destDir, handles.map(h => {
+            const d = deviceByHandle.get(h) || {};
+            return { filename: d.filename || ('file_' + h), metadata: metaFor(d, false) };
+        }));
+        if (check?.conflicts?.length) {
+            onConflict = await window.electronAPI.zunePullAskConflicts(check.conflicts);
+            if (onConflict === 'cancel') return; // selection kept, nothing copied
+        }
+        this.diffSelectedHandles.clear();
 
         const pullBtn = document.getElementById('zune-pull-btn');
         pullBtn.disabled = true;
@@ -2265,12 +2289,10 @@ class ZuneSyncPanel {
         const MAX_RETRIES = 3;
         let pulled = 0;
         let alreadyCopied = 0;
+        let skippedSameName = 0;
         let failedCount = 0;
         const pulledFiles = [];
         const failedFiles = [];
-        const category = this.diffCategory;
-        const deviceItems = (this.browseData && this.browseData[category]) || [];
-        const deviceByHandle = new Map(deviceItems.map(i => [i.handle, i]));
         const failedHandles = [];
         let disconnected = false;
         let stopReason = 'zune disconnected';
@@ -2297,20 +2319,18 @@ class ZuneSyncPanel {
                 if (!deviceItem) continue;
 
                 const filename = deviceItem.filename || ('file_' + handle);
-                const metadata = category === 'music' ? {
-                    title: deviceItem.title || null,
-                    artist: deviceItem.artist || null,
-                    album: deviceItem.album || null,
-                    genre: deviceItem.genre || null,
-                    trackNumber: deviceItem.trackNumber || null,
-                    duration: deviceItem.duration || null, // ms; lets an earlier copy be recognised
-                    albumArt: this._getBrowseArt(deviceItem),
-                } : {};
+                const metadata = metaFor(deviceItem);
 
                 let fileSuccess = false;
                 for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
                     try {
-                        const result = await window.electronAPI.zunePullFile(handle, filename, destDir, metadata);
+                        const result = await window.electronAPI.zunePullFile(handle, filename, destDir, metadata, onConflict);
+                        if (result.success && result.skipped) {
+                            // Name taken by a different file, and the choice was "skip"
+                            skippedSameName++;
+                            fileSuccess = true;
+                            break;
+                        }
                         if (result.success) {
                             pulled++;
                             if (result.alreadyCopied) alreadyCopied++;
@@ -2368,8 +2388,10 @@ class ZuneSyncPanel {
             pullBtn.style.color = '#ff6900';
             this.explorer.showToast?.(failedCount + ' file(s) not copied: ' + failedFiles.slice(0, 3).join(', ') + (failedFiles.length > 3 ? '\u2026' : '') + ' \u2014 they are still selected, press copy to retry');
         } else {
-            pullBtn.textContent = (pulled - alreadyCopied) + ' files copied' +
-                (alreadyCopied ? ' (' + alreadyCopied + ' were already on your computer)' : '');
+            const notes = [];
+            if (alreadyCopied) notes.push(alreadyCopied + ' were already on your computer');
+            if (skippedSameName) notes.push(skippedSameName + ' skipped \u2014 name already taken');
+            pullBtn.textContent = (pulled - alreadyCopied) + ' files copied' + (notes.length ? ' (' + notes.join(', ') + ')' : '');
             pullBtn.style.color = '';
         }
         pullBtn.disabled = false;
