@@ -379,14 +379,31 @@ class ZuneSyncPanel {
         }
         this.open = !this.open;
         this.panel.classList.toggle('open', this.open);
+        this._syncLayout();
     }
 
     show() {
         this.open = true;
         this.panel.classList.add('open');
+        this._syncLayout();
+    }
+
+    /**
+     * Tell the page how much of the right edge the Zune panel covers, so the
+     * main content narrows instead of disappearing underneath it.
+     */
+    _syncLayout() {
+        const edgeShown = this.toggleBtn && this.toggleBtn.style.display !== 'none';
+        document.body.classList.toggle('zune-edge-shown', !!edgeShown);
+        document.body.classList.toggle('zune-panel-open', !!(edgeShown && this.open));
     }
 
     _updateUI(status) {
+        this._updateUIInner(status);
+        this._syncLayout();
+    }
+
+    _updateUIInner(status) {
         const title = document.getElementById('zune-sync-title');
         const subtitle = document.getElementById('zune-sync-subtitle');
         const storageEl = document.getElementById('zune-sync-storage');

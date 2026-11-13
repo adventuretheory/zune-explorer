@@ -4450,3 +4450,10 @@ body.platform-linux .now-playing-panel {
 .song-fixer-edit:hover { color: #fff; border-color: var(--zune-orange); }
 
 .song-fixer-actions .song-fixer-cleanup-btn:not(:disabled) { color: #fff; }
+
+/* Keep the main content clear of the Zune panel on the right: the page
+   narrows when the panel's edge tab (32px) or the open panel (300px + tab)
+   is showing, instead of the panel covering the end of lists and tables. */
+.content-area { transition: padding-right var(--transition-duration) var(--transition-easing); }
+body.zune-edge-shown .content-area { padding-right: 72px; }
+body.zune-panel-open .content-area { padding-right: 372px; }
