@@ -5981,8 +5981,19 @@ class ZuneExplorer {
             head.addEventListener('click', (e) => {
                 const h = e.target.closest('[data-key]');
                 if (!h) return;
-                if (state.sortKey === h.dataset.key) state.sortDir = -state.sortDir;
-                else { state.sortKey = h.dataset.key; state.sortDir = h.dataset.key === 'kbps' || h.dataset.key === 'year' ? -1 : 1; }
+                const k = h.dataset.key;
+                const firstDir = (key) => (key === 'year' ? -1 : 1); // quality: worst first; time: shortest first
+                if (e.shiftKey && state.sortKey !== k) {
+                    // Shift-click: sort by this too, inside the main sort
+                    if (state.sortKey2 === k) state.sortDir2 = -state.sortDir2;
+                    else { state.sortKey2 = k; state.sortDir2 = firstDir(k); }
+                } else if (state.sortKey === k) {
+                    state.sortDir = -state.sortDir;
+                } else {
+                    state.sortKey = k;
+                    state.sortDir = firstDir(k);
+                    if (state.sortKey2 === k) state.sortKey2 = null;
+                }
                 this._songsTableUpdate(false);
             });
             body.addEventListener('click', (e) => {
@@ -6065,20 +6076,28 @@ class ZuneExplorer {
         if (st.whereFilter === 'zune') view = view.filter(r => r.where === 'both' || r.where === 'zune');
         else if (st.whereFilter === 'computer') view = view.filter(r => r.where === 'computer');
         else if (st.whereFilter === 'zuneonly') view = view.filter(r => r.where === 'zune');
+        else if (st.whereFilter === 'both') view = view.filter(r => r.where === 'both');
         const poorCount = view.filter(r => r.q).length;
         if (st.poorOnly) view = view.filter(r => r.q);
         st.poor.textContent = st.poorOnly ? `show all songs` : `\u26A0 poor quality only (${poorCount})`;
         st.poor.classList.toggle('active', st.poorOnly);
         this._qualityScanLabel();
         const key = st.sortKey, dir = st.sortDir;
-        const numeric = key === 'duration' || key === 'year' || key === 'kbps';
+        const key2 = st.sortKey2 && st.sortKey2 !== key ? st.sortKey2 : null, dir2 = st.sortDir2 || 1;
         const coll = this._collator || (this._collator = new Intl.Collator(undefined, { sensitivity: 'base', numeric: true }));
-        view.sort((a, b) => {
+        // Quality sorts by grade first (poor < okay < good), then kbps
+        const GRADE = { poor: 1, ok: 2, good: 3 };
+        const val = (r, k) => (k === 'kbps'
+            ? (r.drm ? 0.5 : (r.g ? (GRADE[r.g.grade] || 0) * 100000 : 0) + (r.kbps || 0)) || 0
+            : r[k]);
+        const cmp = (a, b, k, d) => {
+            const va = val(a, k), vb = val(b, k);
             // Unknown / empty values always go last
-            if (!a[key] !== !b[key]) return a[key] ? -1 : 1;
-            const c = numeric ? (a[key] - b[key]) * dir : coll.compare(String(a[key] || ''), String(b[key] || '')) * dir;
-            return c || coll.compare(a.title, b.title);
-        });
+            if (!va !== !vb) return va ? -1 : 1;
+            const numeric = k === 'duration' || k === 'year' || k === 'kbps';
+            return numeric ? (va - vb) * d : coll.compare(String(va || ''), String(vb || '')) * d;
+        };
+        view.sort((a, b) => cmp(a, b, key, dir) || (key2 ? cmp(a, b, key2, dir2) : 0) || coll.compare(a.title, b.title));
         st.view = view;
         // Songs that left the library (trashed, moved) drop out of the selection
         if (st.selected.size) {
@@ -6091,14 +6110,18 @@ class ZuneExplorer {
         while (st.head.firstChild) st.head.removeChild(st.head.firstChild);
         for (const [k, label] of st.COLS) {
             const h = document.createElement('div');
-            h.className = 'songs-table-cell col-' + k + (k === key ? ' sorted' : '');
-            if (k !== 'play') {
+            h.className = 'songs-table-cell col-' + k + (k === key || k === key2 ? ' sorted' : '');
+            if (k !== 'play' && k !== 'restore') {
                 h.dataset.key = k;
-                h.textContent = label + (k === key ? (dir > 0 ? ' \u25B4' : ' \u25BE') : '');
+                const arrow = (d) => (d > 0 ? ' \u25B4' : ' \u25BE');
+                h.textContent = label + (k === key ? arrow(dir) + (key2 ? '1' : '') : k === key2 ? arrow(dir2) + '2' : '');
+                h.title = 'click to sort \u00b7 shift-click to also sort by this';
             }
             st.head.appendChild(h);
         }
-        st.count.textContent = `${view.length} song${view.length === 1 ? '' : 's'}`;
+        const LABEL = { title: 'title', duration: 'time', artist: 'artist', album: 'album', genre: 'genre', year: 'year', kbps: 'quality', format: 'type', where: 'on' };
+        st.count.textContent = `${view.length} song${view.length === 1 ? '' : 's'}` +
+            (key2 ? ` \u00b7 by ${LABEL[key] || key}, then ${LABEL[key2] || key2}` : '');
         st.view = view;
         st.scroller.setData(view.map(r => ({ type: 'trow', data: r })), { preserveScroll });
     }
@@ -6508,6 +6531,7 @@ class ZuneExplorer {
         const opts = [
             ['all', 'all songs', rows.length],
             ['zune', 'on zune', n(r => r.where === 'both' || r.where === 'zune')],
+            ['both', 'on both', n(r => r.where === 'both')],
             ['computer', 'only on computer', n(r => r.where === 'computer')],
             ['zuneonly', 'only on zune', n(r => r.where === 'zune')],
         ];
