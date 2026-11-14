@@ -656,6 +656,8 @@ function cleanTagText(value) {
   if (!t) return '';
   t = t
     .replace(GUID_ANY_RE, ' ')
+    // a site name split by brackets: "(FULL + NoShout).com"
+    .replace(/[([{][^)\]}]*[)\]}]\.(com|net|org|info|biz|ru|me|tv|fm)\b/gi, ' ')
     // brackets that only hold a site or junk: "[www.site.com]", "(Lyrics)"
     .replace(/[([{][^)\]}]*(https?:|www\.|\.(com|net|org|info|biz|ru|me|tv|fm)\b)[^)\]}]*[)\]}]/gi, ' ')
     .replace(SITE_RE, ' ')

@@ -1332,11 +1332,12 @@ class ZuneSyncPanel {
         for (const d of deviceTracks) {
             const p = pulled[d.handle];
             const local = p && localByPath.get(p);
-            if (local && !pairedLocal.has(local)) {
-                matched.push({ local, device: d });
-                matchedDeviceHandles.add(d.handle);
-                pairedLocal.add(local);
-            }
+            if (!local) continue;
+            // A second copy of the same song on the Zune was copied to the same
+            // file: it's on the computer too, just an extra copy on the Zune
+            matched.push(pairedLocal.has(local) ? { local, device: d, extraCopy: true } : { local, device: d });
+            matchedDeviceHandles.add(d.handle);
+            pairedLocal.add(local);
         }
         const remainingLocal = allLocal.filter(t => !pairedLocal.has(t));
         const remainingDevice = () => deviceTracks.filter(d => !matchedDeviceHandles.has(d.handle));
@@ -1588,7 +1589,7 @@ class ZuneSyncPanel {
         const linked = new Map();
         for (const [handle, p] of Object.entries(this._pulledMap())) linked.set(p, Number(handle));
         for (const m of (this.diffCategory === 'music' && this.diffResult?.matched) || []) {
-            if (m.local?.path && m.device?.handle) linked.set(m.local.path, m.device.handle);
+            if (m.local?.path && m.device?.handle && !m.extraCopy) linked.set(m.local.path, m.device.handle);
         }
         const plan = logic.planZuneUpdate(pending, this.browseData.music || [], current, { libraryKeys, linked });
         return { pending, plan };
@@ -1956,6 +1957,7 @@ class ZuneSyncPanel {
                                 var parts = [];
                                 if (item.local && item.local.artist) parts.push(item.local.artist);
                                 if (item.local && item.local.album) parts.push(item.local.album);
+                                if (item.extraCopy) parts.push('extra copy on zune');
                                 metaSpan.textContent = parts.join(' \u2014 ');
                             } else {
                                 var parts2 = [];

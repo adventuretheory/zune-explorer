@@ -366,6 +366,7 @@ test('numbered copies ("Song (2)") made by repeated copying group with the origi
 test('cleanTagText removes ID codes, websites and video junk', () => {
   assert.equal(L.cleanTagText('www.EveryoneLovesHipHop.com'), '');
   assert.equal(L.cleanTagText('DOPEHOOD.COM'), '');
+  assert.equal(L.cleanTagText('Read Your Mind (FULL + NoShout).com'), 'Read Your Mind');
   assert.equal(L.cleanTagText('Newgrounds Audio Portal - http://www.newgrounds.com/audio'), 'Newgrounds Audio Portal');
   assert.equal(L.cleanTagText('WWW.BUMSQUADDJZ.COM (NEW MUSIC STUDIO RELOADED)'), 'NEW MUSIC STUDIO RELOADED');
   assert.equal(L.cleanTagText('Usher - OMG (Official Music Video) [www.dopehood.com] 320kbps'), 'Usher - OMG');
