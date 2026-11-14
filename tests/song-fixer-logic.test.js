@@ -463,6 +463,8 @@ test('stripSiteTags takes websites out of names and keeps the rest', () => {
   assert.deepEqual(L.stripSiteTags({ title: 'Beautiful', artist: 'Akon', album: 'www.hear-it-first.net' }), { album: '' });
   assert.deepEqual(L.stripSiteTags({ title: 'Song (via DatPiff.com)', artist: 'Free Download @ Hulkshare.com' }), { title: 'Song', artist: '' });
   assert.deepEqual(L.stripSiteTags({ title: 'Clean', artist: 'Will.i.am', album: 'Songs About Girls' }), {});
+  assert.deepEqual(L.stripSiteTags({ title: 'Lil Wayne - Lil Wayne - Gonorrhea (feat. Drake) - DOPEHOOD.COM', artist: 'Lil Wayne' }),
+    { title: 'Gonorrhea (feat. Drake)' });
 });
 
 test('groupSiteCovers flags pictures tied to websites or spread over many albums', () => {

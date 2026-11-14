@@ -96,7 +96,7 @@ function measureCutoff(ffmpegPath, filePath, durationSec = 0) {
   return new Promise((resolve) => {
     const start = durationSec > SECONDS * 2 ? Math.floor(durationSec / 3) : 0;
     const proc = spawn(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-ss', String(start), '-t', String(SECONDS),
-      '-i', filePath, '-vn', '-ac', '1', '-ar', String(SAMPLE_RATE), '-f', 'f32le', '-']);
+      '-i', filePath, '-vn', '-ac', '1', '-ar', String(SAMPLE_RATE), '-f', 'f32le', '-'], { timeout: 60000 });
     const chunks = [];
     proc.stdout.on('data', (c) => chunks.push(c));
     proc.stderr.on('data', () => {});

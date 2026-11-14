@@ -61,7 +61,7 @@ class SongFixer {
         '-i', filePath,
         '-t', String(FINGERPRINT_SECONDS),
         '-vn', '-f', 's16le', '-ac', String(CHANNELS), '-ar', String(SAMPLE_RATE), '-',
-      ]);
+      ], { timeout: 120000 }); // a damaged file mustn't hang everything
       const chunks = [];
       let stderr = '';
       proc.stdout.on('data', (c) => chunks.push(c));
@@ -155,7 +155,11 @@ class SongFixer {
 
   async readTags(filePath) {
     const { parseFile } = await import('music-metadata');
-    const md = await parseFile(filePath, { duration: true });
+    let timer;
+    const md = await Promise.race([
+      parseFile(filePath, { duration: true }),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('reading the song\u2019s tags took too long (damaged file?)')), 30000); }),
+    ]).finally(() => clearTimeout(timer));
     const c = md.common;
     return {
       title: c.title || '',
@@ -224,7 +228,7 @@ class SongFixer {
    */
   async measureDuration(filePath) {
     const run = (args) => new Promise((resolve) => {
-      const proc = spawn(this.ffmpegPath, args);
+      const proc = spawn(this.ffmpegPath, args, { timeout: 180000 });
       let err = '';
       proc.stderr.on('data', (c) => { err += c; if (err.length > 200000) err = err.slice(-100000); });
       proc.on('error', () => resolve(''));
@@ -248,7 +252,7 @@ class SongFixer {
   /** Length in seconds found by decoding the whole file (slower, exact). */
   async decodedDuration(filePath) {
     const out = await new Promise((resolve) => {
-      const proc = spawn(this.ffmpegPath, ['-hide_banner', '-nostats', '-progress', 'pipe:2', '-i', filePath, '-vn', '-f', 'null', '-']);
+      const proc = spawn(this.ffmpegPath, ['-hide_banner', '-nostats', '-progress', 'pipe:2', '-i', filePath, '-vn', '-f', 'null', '-'], { timeout: 180000 });
       let err = '';
       proc.stderr.on('data', (c) => { err += c; if (err.length > 200000) err = err.slice(-100000); });
       proc.on('error', () => resolve(''));
@@ -361,7 +365,7 @@ class SongFixer {
       }
       if (plan.transcode) args.splice(args.length - 2, 0, '-c:a', 'libmp3lame', '-b:a', '320k');
       try {
-        await execFileAsync(this.ffmpegPath, args, { maxBuffer: 1 << 24 });
+        await execFileAsync(this.ffmpegPath, args, { maxBuffer: 1 << 24, timeout: 300000 });
         if (dropCover || plan.transcode) {
           // Size changes when a cover is removed or audio converted: compare lengths
           await sameLength(temp);
@@ -379,7 +383,8 @@ class SongFixer {
         await fs.unlink(temp).catch(() => {});
         // ffmpeg's own explanation is on stderr; keep its last meaningful line
         const stderr = String(err.stderr || '').trim().split('\n').filter(Boolean);
-        lastReason = stderr.length ? stderr[stderr.length - 1] : String(err.message).split('\n')[0];
+        lastReason = err.killed ? 'ffmpeg took too long on this file (damaged?)' : stderr.length ? stderr[stderr.length - 1] : String(err.message).split('\n')[0];
+        if (err.killed) { await fs.unlink(temp).catch(() => {}); break; }
         const all = `${err.stderr || ''} ${err.message || ''}`;
         if (ext === '.mp3' && !plan.transcode && MP3_MISMATCH.test(all)) plan = { ...plan, transcode: true };
         else if (plan.cover) plan = { ...plan, cover: null };
@@ -461,7 +466,8 @@ class SongFixer {
 
   _runFfmpeg(args) {
     return new Promise((resolve, reject) => {
-      const proc = spawn(this.ffmpegPath, args);
+      // Restoring a long song with every fix can take a few minutes, never this long
+      const proc = spawn(this.ffmpegPath, args, { timeout: 900000 });
       let err = '';
       proc.stderr.on('data', (c) => { err += c; if (err.length > 400000) err = err.slice(-200000); });
       proc.on('error', reject);

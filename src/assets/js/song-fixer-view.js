@@ -251,7 +251,7 @@ class SongFixerView {
 
     if (this.running) {
       const stop = this._el('button', 'zune-sync-btn zune-pull-btn', 'stop');
-      stop.addEventListener('click', () => { this.stopRequested = true; stop.disabled = true; stop.textContent = 'stopping…'; });
+      stop.addEventListener('click', () => { this.stopRequested = true; stop.disabled = true; stop.textContent = 'stopping after the current song…'; });
       bar.appendChild(stop);
       return bar;
     }
@@ -721,7 +721,7 @@ class SongFixerView {
       const bar = this._el('div', 'zune-diff-actions song-fixer-actions');
       if (this.running) {
         const stop = this._el('button', 'zune-sync-btn zune-pull-btn', 'stop');
-        stop.addEventListener('click', () => { this.stopRequested = true; stop.disabled = true; stop.textContent = 'stopping…'; });
+        stop.addEventListener('click', () => { this.stopRequested = true; stop.disabled = true; stop.textContent = 'stopping after the current song…'; });
         bar.appendChild(stop);
       } else {
         const go = this._el('button', 'zune-sync-btn zune-push-btn', `remove websites from ${ticked.length} song${ticked.length === 1 ? '' : 's'}`);

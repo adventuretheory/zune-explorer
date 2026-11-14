@@ -758,6 +758,15 @@ function stripSiteTags(tags, filePath = '') {
       if (artist && parts.length >= 2 && norm(parts[0]) === norm(artist)) nv = parts.slice(1).join(' - ');
     }
     if (f === 'genre' && /^unknown$/i.test(nv)) nv = '';
+    // "Lil Wayne - Lil Wayne - Gonorrhea": the artist doesn't belong in the title
+    if (f === 'title' && nv) {
+      const artist = clean(tags.artist);
+      if (artist) {
+        let parts = nv.split(/\s+[-–—]\s+/);
+        while (parts.length >= 2 && norm(parts[0]) === norm(artist)) parts = parts.slice(1);
+        nv = parts.join(' - ');
+      }
+    }
     if (hasSite(nv)) nv = ''; // couldn't be separated from the site
     if (nv !== v) out[f] = nv;
   }
