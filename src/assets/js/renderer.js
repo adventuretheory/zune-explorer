@@ -819,7 +819,15 @@ class ZuneSyncPanel {
             this.browseAlbumArtMap = data.albumArtMap || this.browseAlbumArtMap || {};
         });
 
-        const result = await window.electronAPI.zuneBrowseContents();
+        // "update zune" waits for this: a half-read Zune would look like songs are missing
+        this._deviceScanning = true;
+        this._refreshFixedButton();
+        let result;
+        try {
+            result = await window.electronAPI.zuneBrowseContents();
+        } finally {
+            this._deviceScanning = false;
+        }
 
         document.getElementById('zune-scan-progress').style.display = 'none';
 
@@ -1595,9 +1603,27 @@ class ZuneSyncPanel {
     }
 
     // ---- Song fixer → Zune ----
+    /** Why "update zune" has to wait, or null: it needs the full lists of both sides. */
+    _fixedUpdateBlocked() {
+        if (this._deviceScanning) return 'waiting for the zune scan to finish';
+        if (this.explorer.musicLibrary.scanState === 'scanning') return 'waiting for your music library scan to finish';
+        return null;
+    }
+
     async _refreshFixedButton() {
         const btn = document.getElementById('zune-update-fixed-btn');
         if (!btn || this._fixedBusy || btn.dataset.confirming) return;
+        const blocked = this._fixedUpdateBlocked();
+        if (blocked) {
+            btn.style.display = '';
+            btn.disabled = true;
+            btn.textContent = `update zune \u2014 ${blocked}`;
+            btn.title = 'it needs the full list of songs on your computer and on the zune, so nothing is sent twice or skipped';
+            // Check again shortly
+            clearTimeout(this._fixedWaitTimer);
+            this._fixedWaitTimer = setTimeout(() => this._refreshFixedButton(), 2000);
+            return;
+        }
         let plan = null;
         if (this.diffCategory === 'music' && this.browseData) {
             try { plan = (await this._planFixedUpdate()).plan; } catch { plan = null; }
@@ -1632,6 +1658,8 @@ class ZuneSyncPanel {
     async _updateFixedSongs() {
         const btn = document.getElementById('zune-update-fixed-btn');
         if (this._fixedBusy || !this.browseData) return;
+        const blocked = this._fixedUpdateBlocked();
+        if (blocked) { this.explorer.showToast?.(`update zune is ${blocked}`); this._refreshFixedButton(); return; }
         const { plan } = await this._planFixedUpdate();
 
         if (plan.needsRescan.length) {
