@@ -97,3 +97,35 @@ test('replacing removes each old copy just before sending its new one, and skips
   assert.deepEqual(removed, ['/a.mp3']);
   assert.equal(zm.transferring, false);
 });
+
+test('a song the Zune stops answering on is retried once after reconnecting, then skipped; the rest still go', { skip: !ZuneManager && 'usb module not built' }, async () => {
+  const fsx = require('fs'); const os = require('os'); const pathx = require('path');
+  const dir = fsx.mkdtempSync(pathx.join(os.tmpdir(), 'zsend-'));
+  const a = pathx.join(dir, 'a.mp3'), b = pathx.join(dir, 'b.mp3');
+  fsx.writeFileSync(a, Buffer.alloc(2000)); fsx.writeFileSync(b, Buffer.alloc(2000));
+  const zm = connectedManager();
+  const timeouts = [];
+  zm.transport = { setTransferTimeout: (ms) => timeouts.push(ms) };
+  let recoveries = 0;
+  zm._recoverSession = async () => { recoveries++; };
+  zm._readMetadata = async () => ({});
+  zm._createAlbumObjects = async () => {};
+  let handle = 100;
+  const deleted = [];
+  zm.mtp = {
+    sendObjectInfo: async () => ({ objectHandle: ++handle }),
+    sendObject: async (data) => { if (sending === a) throw new Error('LIBUSB_TRANSFER_TIMED_OUT'); },
+    setObjectPropString: async () => {}, setObjectPropUint32: async () => {}, setObjectPropUint16: async () => {},
+    deleteObject: async (h) => { deleted.push(h); },
+    getStorageInfo: async () => ({}),
+  };
+  let sending = null;
+  zm.on('transfer-progress', (p) => { if (p.state === 'sending' && p.bytesTransferred === 0) sending = p.fileName === 'a.mp3' ? a : b; });
+  const r = await zm.sendFiles([a, b]);
+  assert.deepEqual(r.succeeded, [b]);
+  assert.equal(r.failed.length, 1);
+  assert.equal(recoveries, 2, 'reconnected after each stall, then gave up on that song');
+  assert.deepEqual(deleted, [101, 102], 'half-sent copies cleaned up');
+  assert.ok(timeouts.includes(60000) && timeouts[timeouts.length - 1] === 0, 'time limit set while sending and cleared after');
+  fsx.rmSync(dir, { recursive: true, force: true });
+});

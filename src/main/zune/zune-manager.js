@@ -173,7 +173,7 @@ class ZuneManager extends EventEmitter {
       '-id3v2_version', '3',
       '-y',
       outputPath,
-    ]);
+    ], { timeout: 180000 }); // a broken file mustn't hold up the whole sync
 
     return outputPath;
   }
@@ -190,7 +190,7 @@ class ZuneManager extends EventEmitter {
       '-write_id3v1', '1',
       '-y',
       outputPath,
-    ]);
+    ], { timeout: 60000 });
 
     return outputPath;
   }
@@ -198,7 +198,11 @@ class ZuneManager extends EventEmitter {
   async _readMetadata(filePath) {
     try {
       const { parseFile } = await import('music-metadata');
-      const metadata = await parseFile(filePath);
+      let timer;
+      const metadata = await Promise.race([
+        parseFile(filePath),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('reading tags timed out')), 20000); }),
+      ]).finally(() => clearTimeout(timer));
       const result = {
         title: metadata.common.title || null,
         artist: metadata.common.artist || null,
@@ -312,6 +316,7 @@ class ZuneManager extends EventEmitter {
 
           let fileSucceeded = false;
           let lastError = null;
+          let stalls = 0;
 
           // Replacing: take the old copy off first, right before its new one goes on
           const oldHandle = replace && Object.prototype.hasOwnProperty.call(replace, filePath) ? replace[filePath] : null;
@@ -321,8 +326,11 @@ class ZuneManager extends EventEmitter {
               totalFiles, bytesTransferred: 0, totalBytes: 0,
             });
             try {
-              await this._deleteOneObject(oldHandle);
+              await this._withUsbTimeout(20000, () => this._deleteOneObject(oldHandle));
             } catch (err) {
+              if (this._isStall(err)) {
+                try { await this._recoverSession(); } catch (_) { /* reported below */ }
+              }
               if (!/InvalidObjectHandle/.test(err.message)) {
                 // Couldn't remove the old copy: don't add a second one next to it
                 console.log(`ZuneManager: could not remove old copy of ${path.basename(filePath)}: ${err.message}`);
@@ -405,6 +413,10 @@ class ZuneManager extends EventEmitter {
                 totalBytes,
               });
 
+              // Every USB step of this file gets a time limit: a Zune that stops
+              // answering (e.g. after taking a file) mustn't freeze the sync.
+              // Generous, as the Zune may need a while to store a big file.
+              this.transport.setTransferTimeout(60000);
               const info = await this.mtp.sendObjectInfo(this.storageId, 0, {
                 objectFormat,
                 compressedSize: totalBytes,
@@ -457,17 +469,34 @@ class ZuneManager extends EventEmitter {
                 }
               }
 
+              this.transport.setTransferTimeout(0);
               fileSucceeded = true;
               break; // Success — exit retry loop
             } catch (err) {
+              this.transport.setTransferTimeout(0);
               lastError = err;
               console.log(`ZuneManager: file failed (attempt ${attempt}/${MAX_RETRIES}): ${path.basename(filePath)} — ${err.message}`);
+
+              // The Zune stopped answering: reconnect (like replugging), then
+              // clean up and try this song once more before moving on
+              if (this._isStall(err)) {
+                stalls++;
+                this.emit('transfer-progress', { state: 'recovering', fileName: path.basename(filePath), fileIndex: completedFiles, totalFiles });
+                try {
+                  await this._recoverSession();
+                } catch (recErr) {
+                  lastError = recErr;
+                  throw recErr; // device gone: stop the whole sync
+                }
+                dataPhaseFailed = true; // the half-sent copy (if any) gets deleted below
+                if (stalls >= 2) attempt = MAX_RETRIES; // don't spend minutes on one song
+              }
 
               // Clean up orphan handle if data-phase failed
               if (dataPhaseFailed && objectHandle) {
                 try {
                   console.log(`ZuneManager: cleaning up orphan handle ${objectHandle}`);
-                  await this.mtp.deleteObject(objectHandle);
+                  await this._withUsbTimeout(15000, () => this.mtp.deleteObject(objectHandle));
                 } catch (cleanupErr) {
                   console.log(`ZuneManager: orphan cleanup failed: ${cleanupErr.message}`);
                 }

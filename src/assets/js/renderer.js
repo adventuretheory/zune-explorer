@@ -601,6 +601,16 @@ class ZuneSyncPanel {
                 bytesEl.textContent = 'converting to mp3...';
                 break;
 
+            case 'recovering':
+                // The Zune stopped answering on this song: reconnecting, then retry or skip it
+                idleEl.style.display = 'none';
+                progressEl.style.display = 'block';
+                completeEl.style.display = 'none';
+                countEl.textContent = `zune stopped responding \u2014 reconnecting (${progress.fileIndex + 1} of ${progress.totalFiles})`;
+                fileEl.textContent = progress.fileName;
+                bytesEl.textContent = 'this song is tried once more, then skipped if it still won\u2019t go';
+                break;
+
             case 'replacing':
                 // Update zune: the old copy of this song comes off just before its new one goes on
                 idleEl.style.display = 'none';
