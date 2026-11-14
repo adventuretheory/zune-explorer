@@ -172,7 +172,7 @@ class SongFixerView {
 
     // Which songs to list
     const tabs = this._el('div', 'zune-diff-tabs');
-    for (const [label, mode] of [['needs fixing', 'fix'], ['all songs', 'all'], ['websites', 'sites'], ['duplicates', 'dupes'], ['duplicates on zune', 'zune-dupes']]) {
+    for (const [label, mode] of [['needs fixing', 'fix'], ['all songs', 'all'], ['album art', 'art'], ['websites', 'sites'], ['duplicates', 'dupes'], ['duplicates on zune', 'zune-dupes']]) {
       const t = this._el('button', 'zune-diff-tab' + (this.mode === mode ? ' active' : ''), label);
       t.addEventListener('click', () => { if (this.running) return; this.mode = mode; this.limit = PAGE_SIZE; this.status = ''; this._draw(); });
       tabs.appendChild(t);
@@ -185,6 +185,10 @@ class SongFixerView {
     }
     if (this.mode === 'sites') {
       this._drawSites(c);
+      return;
+    }
+    if (this.mode === 'art') {
+      this._drawArt(c);
       return;
     }
 
@@ -809,9 +813,116 @@ class SongFixerView {
     // 2. Songs on the Zune (including ones not on this computer)
     this._drawZuneSites(c);
 
-    // 3. Album art
+    // Album art lives on its own tab now
+    const pointer = this._el('div', 'song-fixer-note song-fixer-pointer');
+    pointer.append(document.createTextNode('looking for website logos used as album art? they\u2019re on the '));
+    const go = this._el('button', 'song-fixer-link', 'album art');
+    go.addEventListener('click', () => { if (this.running) return; this.mode = 'art'; this.status = ''; this._draw(); });
+    pointer.append(go, document.createTextNode(' tab now, with songs missing album art.'));
+    c.appendChild(pointer);
+  }
+
+  /** The album art tab: songs with no cover, and wrong pictures (website logos etc.). */
+  _drawArt(c) {
+    if (!this.artSkip) this.artSkip = new Set();   // paths unticked in the missing list
+    if (!this.artLimit) this.artLimit = PAGE_SIZE;
+    this.statusEl = this._el('div', 'song-fixer-status song-fixer-sites-status', this.status);
+    c.appendChild(this.statusEl);
+
+    const sec = this._el('div', 'song-fixer-sites');
+    sec.appendChild(this._el('h3', 'song-fixer-sites-head', 'songs with no album art'));
+    const missing = this.items.filter(i => !(i.track.albumArtKey || i.track.albumArt));
+    if (!missing.length) {
+      sec.appendChild(this._el('div', 'song-fixer-note', 'every song has album art. \u2713'));
+    } else {
+      const q = (this.artFilter || '').trim().toLowerCase();
+      const shown = missing.filter(i => !q || [i.track.title, i.track.artist, i.track.album].some(v => String(v || '').toLowerCase().includes(q)))
+        .sort((x, y) => String(x.track.artist || '').localeCompare(String(y.track.artist || '')) || String(x.track.album || '').localeCompare(String(y.track.album || '')));
+      const ticked = shown.filter(i => !this.artSkip.has(i.path));
+      sec.appendChild(this._el('div', 'song-fixer-note',
+        `${missing.length} song${missing.length === 1 ? ' has' : 's have'} no album art. \u201cfind online\u201d looks each one up by artist and album ` +
+        '(fix wrong or missing album names first for the best results); \u201cset from an image\u201d puts a picture you choose on the ticked songs.'));
+      const filter = this._el('input', 'zune-diff-filter-input');
+      filter.placeholder = 'filter by song, artist or album\u2026';
+      filter.value = this.artFilter || '';
+      filter.addEventListener('input', () => { this.artFilter = filter.value; this.artLimit = PAGE_SIZE; this._draw(); const f = this.container.querySelector('.song-fixer-art-filter'); if (f) { f.focus(); f.setSelectionRange(f.value.length, f.value.length); } });
+      filter.classList.add('song-fixer-art-filter');
+      sec.appendChild(filter);
+
+      const bar = this._el('div', 'zune-diff-actions');
+      if (!this.running) {
+        const find = this._el('button', 'zune-sync-btn zune-push-btn', `find album art online (${ticked.length})`);
+        find.disabled = !ticked.length;
+        find.addEventListener('click', () => this._addArt(ticked, false));
+        const pick = this._el('button', 'zune-sync-btn song-fixer-cleanup-btn', `set from an image\u2026 (${ticked.length})`);
+        pick.disabled = !ticked.length;
+        pick.title = 'choose a picture on your computer and put it on the ticked songs (e.g. one album)';
+        pick.addEventListener('click', () => this._addArt(ticked, true));
+        bar.append(find, pick);
+      }
+      sec.appendChild(bar);
+
+      const all = this._el('label', 'zune-diff-select-all');
+      const allBox = this._el('input');
+      allBox.type = 'checkbox';
+      allBox.checked = ticked.length === shown.length;
+      allBox.addEventListener('change', () => {
+        for (const i of shown) { if (allBox.checked) this.artSkip.delete(i.path); else this.artSkip.add(i.path); }
+        this._draw();
+      });
+      all.append(allBox, document.createTextNode(`${allBox.checked ? 'deselect' : 'select'} all (${shown.length} songs)`));
+      sec.appendChild(all);
+      for (const it of shown.slice(0, this.artLimit)) {
+        const row = this._el('div', 'zune-diff-item song-fixer-row');
+        const box = this._el('input', 'zune-diff-check');
+        box.type = 'checkbox';
+        box.checked = !this.artSkip.has(it.path);
+        box.disabled = this.running;
+        box.addEventListener('change', () => { if (box.checked) this.artSkip.delete(it.path); else this.artSkip.add(it.path); this._draw(); });
+        const info = this._el('div', 'zune-diff-info');
+        info.appendChild(this._el('div', 'zune-diff-title', it.track.title || it.path.split(/[/\\]/).pop()));
+        info.appendChild(this._el('div', 'zune-diff-meta', `${it.track.artist || '?'} \u2014 ${it.track.album || 'no album'}`));
+        row.append(box, this._playButton(it.path), info);
+        row.addEventListener('contextmenu', (e) => this._songMenu(e, it.path));
+        sec.appendChild(row);
+      }
+      if (shown.length > this.artLimit) {
+        const more = this._el('button', 'song-fixer-link song-fixer-more', `show more (${shown.length - this.artLimit} left)`);
+        more.addEventListener('click', () => { this.artLimit += PAGE_SIZE; this._draw(); });
+        sec.appendChild(more);
+      }
+    }
+    c.appendChild(sec);
+    this._drawCoverCheck(c);
+  }
+
+  async _addArt(items, pickImage) {
+    this.running = true;
+    this._draw();
+    const r = await this.explorer.addAlbumArt(items.map(i => i.path), {
+      pickImage,
+      onProgress: (n, total) => this._setStatus(`${pickImage ? 'adding the picture' : 'looking for album art'}: ${n} of ${total}\u2026`),
+    });
+    this.running = false;
+    if (r) {
+      const why = [...new Set(r.reasons)].slice(0, 2).join('; ');
+      this.status = `album art added to ${r.added} song${r.added === 1 ? '' : 's'}` +
+        (r.skipped + r.failed ? `, ${r.skipped + r.failed} not changed (${why})` : '') + '.' +
+        (r.added ? ' press \u201cupdate zune\u201d in its music list to put it on your zune.' : '');
+    } else {
+      this.status = '';
+    }
+    try { this.undoInfo = await window.electronAPI.songFixerUndoInfo(); } catch {}
+    await new Promise(res => setTimeout(res, 400));
+    this._loadItems();
+    this._draw();
+  }
+
+  /** Website logos / one picture on many albums: find, remove, then look up real covers. */
+  _drawCoverCheck(c) {
+    if (!this.coverSkip) this.coverSkip = new Set();
     const art = this._el('div', 'song-fixer-sites');
-    art.appendChild(this._el('h3', 'song-fixer-sites-head', 'website pictures used as album art'));
+    art.appendChild(this._el('h3', 'song-fixer-sites-head', 'wrong pictures: website logos and covers on the wrong songs'));
     art.appendChild(this._el('div', 'song-fixer-note',
       'reads the album art in every song and groups identical pictures. a picture is listed when songs that use it have (or had) a website in their details, ' +
       'or when the same picture is on lots of different artists and albums — real covers aren’t. look at each one: ticked pictures are removed from their songs ' +
