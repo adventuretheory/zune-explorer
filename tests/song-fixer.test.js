@@ -315,3 +315,32 @@ test('a broken cover image doesn\'t stop the tags being fixed', { skip: !haveFfm
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('a song saved as ".net" gets its real ending, and VBR files without a length header still save', { skip: !haveFfmpeg && 'ffmpeg binary not installed' }, async () => {
+  const { SongFixer } = require('../src/main/song-fixer.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'songfixer-'));
+  try {
+    const art = path.join(dir, 'art.jpg');
+    execFileSync(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc=s=800x800:d=1',
+      '-frames:v', '1', '-q:v', '1', '-y', art]);
+    // VBR MP3 with no Xing header (so its length is a guess) and a big cover
+    const song = path.join(dir, 'Akon - Beautiful (www.hear-it-first).net');
+    execFileSync(ffmpegPath, ['-hide_banner', '-loglevel', 'error',
+      '-f', 'lavfi', '-i', 'sine=f=220:d=4,volume=0.1', '-f', 'lavfi', '-i', 'anoisesrc=d=16:a=0.6:c=white', '-i', art,
+      '-filter_complex', '[0][1]concat=n=2:v=0:a=1[a]', '-map', '[a]', '-map', '2:v',
+      '-c:a', 'libmp3lame', '-q:a', '6', '-write_xing', '0', '-c:v', 'copy', '-id3v2_version', '3',
+      '-f', 'mp3', '-y', song]);
+
+    const sf = new SongFixer({ ffmpegPath, dataDir: dir });
+    const res = await sf.apply('200', song, { title: 'Beautiful', artist: 'Akon' });
+    assert.equal(res.renamedTo, path.join(dir, 'Akon - Beautiful (www.hear-it-first).mp3'));
+    assert.equal(fs.existsSync(song), false);
+    assert.equal((await sf.readTags(res.renamedTo)).title, 'Beautiful');
+
+    // Dropping the cover shrinks the file, so lengths are compared
+    await sf._rewrite(res.renamedTo, {}, { dropCover: true });
+    assert.equal((await sf.readTags(res.renamedTo)).hasCover, false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

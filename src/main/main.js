@@ -794,17 +794,7 @@ function knownAudioExt(filename) {
 }
 
 /** What kind of audio a file holds, from its first bytes ('.mp3', '.wma', …) or null. */
-function sniffAudioExt(buf) {
-  if (!buf || buf.length < 12) return null;
-  if (buf.slice(0, 3).toString('latin1') === 'ID3') return '.mp3';
-  if (buf[0] === 0x30 && buf[1] === 0x26 && buf[2] === 0xB2 && buf[3] === 0x75) return '.wma'; // ASF
-  if (buf.slice(4, 8).toString('latin1') === 'ftyp') return '.m4a';
-  if (buf.slice(0, 4).toString('latin1') === 'fLaC') return '.flac';
-  if (buf.slice(0, 4).toString('latin1') === 'OggS') return '.ogg';
-  if (buf.slice(0, 4).toString('latin1') === 'RIFF') return '.wav';
-  if (buf[0] === 0xFF && (buf[1] & 0xE0) === 0xE0) return '.mp3'; // MPEG audio frame
-  return null;
-}
+const sniffAudioExt = (buf) => require('../shared/song-fixer-logic.js').sniffAudioExt(buf);
 
 function pullBaseName(filename, metadata) {
   const ext = knownAudioExt(filename);

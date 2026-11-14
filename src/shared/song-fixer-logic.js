@@ -830,6 +830,22 @@ const songFixerLogic = {
   WRITABLE_EXTENSIONS,
 };
 
+// What kind of audio a file holds, from its first bytes (Buffer or
+// Uint8Array of at least 12 bytes): '.mp3', '.wma', … or null
+function sniffAudioExt(buf) {
+  if (!buf || buf.length < 12) return null;
+  const str = (a, b) => String.fromCharCode(...Array.from(buf.slice(a, b)));
+  if (str(0, 3) === 'ID3') return '.mp3';
+  if (buf[0] === 0x30 && buf[1] === 0x26 && buf[2] === 0xB2 && buf[3] === 0x75) return '.wma'; // ASF
+  if (str(4, 8) === 'ftyp') return '.m4a';
+  if (str(0, 4) === 'fLaC') return '.flac';
+  if (str(0, 4) === 'OggS') return '.ogg';
+  if (str(0, 4) === 'RIFF') return '.wav';
+  if (buf[0] === 0xFF && (buf[1] & 0xE0) === 0xE0) return '.mp3'; // MPEG audio frame
+  return null;
+}
+songFixerLogic.sniffAudioExt = sniffAudioExt;
+
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = songFixerLogic;
 }

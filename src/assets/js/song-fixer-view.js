@@ -961,6 +961,11 @@ class SongFixerView {
       for (const f of p.clear || []) if (!(f in tags)) tags[f] = '';
       const res = await window.electronAPI.songFixerApply(batchId, item.path, tags, { releaseGroupId: p.releaseGroupId, addCover: true });
       if (res.success) {
+        // Saved as ".net" etc.: it now has its real ending, e.g. ".mp3"
+        if (res.renamedTo) {
+          this.explorer.renameLibraryPath?.(item.path, res.renamedTo);
+          item.path = res.renamedTo;
+        }
         item.state = 'applied';
         item.selected = false;
         item.applyError = null;

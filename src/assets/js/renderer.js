@@ -4881,6 +4881,37 @@ class ZuneExplorer {
         parent.appendChild(div);
     }
 
+    // A song's file was renamed (e.g. "Song.net" -> "Song.mp3"): follow it
+    renameLibraryPath(oldPath, newPath) {
+        const file = this.categorizedFiles.music.find(f => f.path === oldPath);
+        if (file) {
+            file.path = newPath;
+            file.extension = newPath.substring(newPath.lastIndexOf('.'));
+            file.name = newPath.split(/[/\\]/).pop();
+        } else {
+            this.categorizedFiles.music.push({ path: newPath, name: newPath.split(/[/\\]/).pop(),
+                extension: newPath.substring(newPath.lastIndexOf('.')), size: 0, modified: new Date(), isDirectory: false });
+        }
+        const track = this.musicLibrary.tracks.get(oldPath);
+        if (track) {
+            this.musicLibrary.tracks.delete(oldPath);
+            track.path = newPath;
+            this.musicLibrary.tracks.set(newPath, track);
+        }
+        // Songs remembered as copied off a Zune
+        try {
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                if (!key || !key.startsWith('zune-pulled:')) continue;
+                const map = JSON.parse(localStorage.getItem(key) || '{}');
+                let changed = false;
+                for (const h of Object.keys(map)) if (map[h] === oldPath) { map[h] = newPath; changed = true; }
+                if (changed) localStorage.setItem(key, JSON.stringify(map));
+            }
+        } catch { /* best-effort */ }
+        if (this.zunePanel) this.zunePanel._pulledCache = null;
+    }
+
     rebuildMusicIndexes() {
         const lib = this.musicLibrary;
         lib.albums.clear();

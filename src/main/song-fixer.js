@@ -243,6 +243,44 @@ class SongFixer {
     return 0;
   }
 
+  /** Length in seconds found by decoding the whole file (slower, exact). */
+  async decodedDuration(filePath) {
+    const out = await new Promise((resolve) => {
+      const proc = spawn(this.ffmpegPath, ['-hide_banner', '-nostats', '-progress', 'pipe:2', '-i', filePath, '-vn', '-f', 'null', '-']);
+      let err = '';
+      proc.stderr.on('data', (c) => { err += c; if (err.length > 200000) err = err.slice(-100000); });
+      proc.on('error', () => resolve(''));
+      proc.on('close', () => resolve(err));
+    });
+    const times = [...out.matchAll(/out_time=(\d+):(\d+):(\d+(?:\.\d+)?)/g)];
+    if (!times.length) return 0;
+    const t = times[times.length - 1];
+    return Number(t[1]) * 3600 + Number(t[2]) * 60 + Number(t[3]);
+  }
+
+  /**
+   * A song saved with a wrong ending (".net", ".com" — left over from a title)
+   * gets the ending of the audio it really holds. Returns the (new) path.
+   */
+  async _fixWrongExtension(filePath) {
+    const ext = path.extname(filePath).toLowerCase();
+    if (logic.WRITABLE_EXTENSIONS.has(ext) || ext === '.wav') return filePath;
+    const head = Buffer.alloc(16);
+    const fh = await fs.open(filePath, 'r');
+    try { await fh.read(head, 0, 16, 0); } finally { await fh.close(); }
+    const real = logic.sniffAudioExt(head);
+    if (!real) return filePath;
+    const dir = path.dirname(filePath);
+    const base = ext && ext.length <= 5 && !/\s/.test(ext) ? path.basename(filePath, ext) : path.basename(filePath);
+    let to = path.join(dir, base + real);
+    for (let n = 2; ; n++) {
+      try { await fs.access(to); } catch { break; }
+      to = path.join(dir, `${base} (${n})${real}`);
+    }
+    await fs.rename(filePath, to);
+    return to;
+  }
+
   async _identifyByTitle(filePath, current, libraryTrack) {
     if (!this.searchRecordings) return null;
     // Prefer what the file says; the library's view fills gaps. Text the
@@ -301,7 +339,11 @@ class SongFixer {
     const sameLength = async (temp) => {
       const [a, b] = await Promise.all([parseFile(filePath, { duration: true }), parseFile(temp, { duration: true })]);
       const da = a.format.duration || 0, db = b.format.duration || 0;
-      if (!db || (da && Math.abs(da - db) > 1)) throw new Error('rewritten file is a different length');
+      if (db && (!da || Math.abs(da - db) <= 1)) return;
+      // Header-based lengths can be guesses (MP3s without a length header).
+      // Play both through to the end and compare the real lengths.
+      const [ra, rb] = await Promise.all([this.decodedDuration(filePath), this.decodedDuration(temp)]);
+      if (!rb || (ra && Math.abs(ra - rb) > Math.max(1, ra * 0.01))) throw new Error('rewritten file is a different length');
     };
     const MP3_MISMATCH = /exactly one mp3 audio stream|invalid audio stream|not currently supported in container|could not find tag for codec|codec .* not supported/i;
 
@@ -351,6 +393,9 @@ class SongFixer {
    * @param {object} opts  { releaseGroupId, addCover }
    */
   async apply(batchId, filePath, tags, { releaseGroupId = null, addCover = true } = {}) {
+    const originalPath = filePath;
+    filePath = await this._fixWrongExtension(filePath);
+    const renamedTo = filePath !== originalPath ? filePath : undefined;
     const ext = path.extname(filePath).toLowerCase();
     if (!logic.WRITABLE_EXTENSIONS.has(ext)) throw new Error(`Can't write tags to ${ext} files`);
 
@@ -378,7 +423,7 @@ class SongFixer {
 
     await this._record(batchId, { path: filePath, before, addedCover });
     await this._addPending(filePath, current);
-    return { addedCover, transcoded: !!outcome.transcoded, coverSkipped: !!outcome.coverSkipped };
+    return { addedCover, transcoded: !!outcome.transcoded, coverSkipped: !!outcome.coverSkipped, renamedTo };
   }
 
   // ---- Songs fixed here but not yet updated on the Zune ---------------------
