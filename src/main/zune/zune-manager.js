@@ -68,7 +68,7 @@ class ZuneManager extends EventEmitter {
     this.currentStatus = { state: 'connecting', model, productId: info.productId };
     this.emit('status', this.currentStatus);
 
-    try {
+    const openUsb = async () => {
       // Use libusb device directly if available (hotplug), otherwise requestDevice (startup)
       if (info.libusbDevice) {
         // Device may not be ready immediately after hotplug — retry with delay
@@ -88,24 +88,54 @@ class ZuneManager extends EventEmitter {
       } else {
         await this.transport.open(ZUNE_VENDOR_ID, info.productId);
       }
-      console.log('ZuneManager: USB device opened, starting MTP...');
+    };
 
-      this.mtp = new MtpProtocol(this.transport);
-      this._refusedProps = null; // a new connection may be a different Zune
-      await this.mtp.openSession(1);
-      console.log('ZuneManager: MTP session opened');
+    try {
+      // A Zune left mid-conversation (e.g. the app was killed while
+      // connected) can stop answering partway through the handshake.
+      // Every step gets a time limit; on a stall the USB connection is
+      // reopened and the handshake tried again from the start.
+      const ATTEMPTS = 3;
+      for (let attempt = 1; ; attempt++) {
+        try {
+          await openUsb();
+          console.log('ZuneManager: USB device opened, starting MTP...');
+          // Replies the Zune still had queued from before would confuse the handshake
+          const stale = await this.transport.drainIn();
+          if (stale) console.log(`ZuneManager: discarded ${stale} stale bytes from the device`);
+          this.transport.setTransferTimeout(15000);
 
-      this.auth = new MtpzAuth(this.mtp);
-      await this.auth.authenticate();
-      console.log('ZuneManager: MTPZ authentication complete');
+          this.mtp = new MtpProtocol(this.transport);
+          this._refusedProps = null; // a new connection may be a different Zune
+          await this.mtp.openSession(1);
+          console.log('ZuneManager: MTP session opened');
 
-      this.deviceInfo = await this.mtp.getDeviceInfo();
+          this.auth = new MtpzAuth(this.mtp);
+          await this.auth.authenticate();
+          console.log('ZuneManager: MTPZ authentication complete');
 
-      const storageIDs = await this.mtp.getStorageIDs();
-      console.log(`ZuneManager: storage IDs: [${storageIDs.map(id => '0x' + id.toString(16)).join(', ')}]`);
-      this.storageId = storageIDs[0];
+          this.deviceInfo = await this.mtp.getDeviceInfo();
 
-      this.storageInfo = await this.mtp.getStorageInfo(this.storageId);
+          const storageIDs = await this.mtp.getStorageIDs();
+          console.log(`ZuneManager: storage IDs: [${storageIDs.map(id => '0x' + id.toString(16)).join(', ')}]`);
+          this.storageId = storageIDs[0];
+
+          this.storageInfo = await this.mtp.getStorageInfo(this.storageId);
+          this.transport.setTransferTimeout(0);
+          break;
+        } catch (err) {
+          try { this.transport.setTransferTimeout(0); } catch (_) { /* closed */ }
+          if (attempt >= ATTEMPTS) {
+            throw new Error(`the zune didn\u2019t answer (${err.message}) \u2014 unplug it, restart it if it\u2019s stuck on a sync screen, and plug it back in`);
+          }
+          console.log(`ZuneManager: connecting failed (attempt ${attempt}/${ATTEMPTS}): ${err.message} \u2014 reopening and trying again`);
+          this.currentStatus = { state: 'connecting', model, productId: info.productId, retry: attempt };
+          this.emit('status', this.currentStatus);
+          try { await this.transport.close(); } catch (_) { /* already closed */ }
+          this.mtp = null;
+          await new Promise(r => setTimeout(r, 1500 * attempt));
+        }
+      }
 
       this.connected = true;
       this.currentStatus = {

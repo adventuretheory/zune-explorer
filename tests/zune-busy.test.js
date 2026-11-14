@@ -141,3 +141,38 @@ test('disconnecting closes the session with a time limit, even if the Zune never
   assert.equal(closed, true);
   assert.equal(zm.connected, false);
 });
+
+test('connecting retries from the start when the Zune stops answering during the handshake', { skip: !ZuneManager && 'usb module not built' }, async () => {
+  const { MtpProtocol } = require('../src/main/zune/mtp-protocol.js');
+  const { MtpzAuth } = require('../src/main/zune/mtpz-auth.js');
+  const saved = {
+    open: MtpProtocol.prototype.openSession, info: MtpProtocol.prototype.getDeviceInfo,
+    ids: MtpProtocol.prototype.getStorageIDs, st: MtpProtocol.prototype.getStorageInfo, auth: MtpzAuth.prototype.authenticate,
+  };
+  let auths = 0;
+  MtpProtocol.prototype.openSession = async () => {};
+  MtpProtocol.prototype.getDeviceInfo = async () => ({});
+  MtpProtocol.prototype.getStorageIDs = async () => [0x10001];
+  MtpProtocol.prototype.getStorageInfo = async () => ({ free: 1 });
+  MtpzAuth.prototype.authenticate = async () => { if (++auths === 1) throw new Error('LIBUSB_TRANSFER_TIMED_OUT'); };
+  try {
+    const zm = new ZuneManager();
+    const log = [];
+    zm.transport = {
+      open: async () => log.push('open'), close: async () => log.push('close'),
+      drainIn: async () => 0, setTransferTimeout: () => {},
+    };
+    const statuses = [];
+    zm.on('status', (st) => statuses.push(st.state));
+    const realTimeout = global.setTimeout;
+    global.setTimeout = (fn) => realTimeout(fn, 0); // skip the waits
+    try { await zm._handleAttach({ productId: 0x063e }); } finally { global.setTimeout = realTimeout; }
+    assert.equal(zm.connected, true);
+    assert.equal(auths, 2);
+    assert.deepEqual(log, ['open', 'close', 'open']);
+    assert.equal(statuses.at(-1), 'connected');
+  } finally {
+    Object.assign(MtpProtocol.prototype, { openSession: saved.open, getDeviceInfo: saved.info, getStorageIDs: saved.ids, getStorageInfo: saved.st });
+    MtpzAuth.prototype.authenticate = saved.auth;
+  }
+});
