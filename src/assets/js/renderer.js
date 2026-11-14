@@ -1271,9 +1271,15 @@ class ZuneSyncPanel {
         }
     }
 
-    _computeMusicDiff() {
+    /**
+     * Pair the computer's songs with the Zune's. With no arguments it works
+     * on the connected (or cached) Zune and sets this.diffResult; given a
+     * device list and remembered-copies map it just returns the result.
+     */
+    _computeMusicDiff(deviceList = null, pulledMap = null) {
+        const standalone = !!deviceList;
         const localTracks = this.explorer.musicLibrary.tracks; // Map: path -> trackInfo
-        const deviceTracks = (this.browseData && this.browseData.music) || [];
+        const deviceTracks = deviceList || (this.browseData && this.browseData.music) || [];
 
         const matched = [];
         const localOnly = [];
@@ -1326,7 +1332,7 @@ class ZuneSyncPanel {
         }
 
         // Pass 0: songs this app copied off the Zune (remembered at copy time)
-        const pulled = this._pulledMap();
+        const pulled = pulledMap || this._pulledMap();
         const localByPath = new Map(allLocal.map(t => [t.path, t]));
         const pairedLocal = new Set();
         for (const d of deviceTracks) {
@@ -1387,6 +1393,10 @@ class ZuneSyncPanel {
         }
         for (const m of matched) delete m.local._basename;
 
+        if (standalone) return { matched, localOnly, deviceOnly };
+        // The songs table's "on" column follows this
+        this.explorer._zuneMembership = null;
+        this.explorer._songsTableRefreshSoon?.();
         this.diffResult = { matched, localOnly, deviceOnly };
     }
 
@@ -2681,52 +2691,79 @@ class ZuneSyncPanel {
     }
 
     /**
-     * Remove one song from the Zune. If the computer has it, just confirm.
-     * If not, offer to copy it over first and only remove it once the copy
-     * has worked.
+     * Copy Zune songs to the computer (asks where, like the copy button).
+     * @returns {number[]} the handles that were copied
      */
-    async removeOneFromDevice(handle) {
-        if (this._removingOne) return;
-        const device = (this.browseData?.music || []).find(d => d.handle === handle);
-        if (!device) return;
-        const match = (this.diffResult?.matched || []).find(m => m.device && m.device.handle === handle);
-        const onComputer = !!(match && match.local && match.local.path && this.explorer.musicLibrary.tracks.has(match.local.path));
+    async copyToComputer(handles) {
+        const prevCat = this.diffCategory;
+        const before = new Set(this.diffSelectedHandles);
+        this.diffCategory = 'music';
+        this.diffSelectedHandles = new Set(handles);
+        let failed = new Set(handles);
+        try {
+            await this._pullFromDevice();
+            failed = new Set(this.diffSelectedHandles);
+        } finally {
+            this.diffSelectedHandles = before;
+            this.diffCategory = prevCat;
+            if (this.diffActive && prevCat !== 'music') { this._computeDiff(); this._renderDiffSummary(); this._destroyDiffScroller(); this._renderDiffList(); }
+        }
+        const pulled = this._pulledMap();
+        return handles.filter(h => pulled[h] && !failed.has(h));
+    }
+
+    /**
+     * Remove songs from the Zune. Songs the computer has are just confirmed.
+     * For songs it doesn't have, offer to copy them over first; those are
+     * only removed once their copy has worked.
+     */
+    async removeFromDevice(handles) {
+        if (this._removingOne || !handles.length) return;
+        const music = this.browseData?.music || [];
+        const byHandle = new Map(music.map(d => [d.handle, d]));
+        handles = handles.filter(h => byHandle.has(h));
+        if (!handles.length) return;
+        const res = this._computeMusicDiff(music, this._pulledMap());
+        const localOf = new Map(res.matched
+            .filter(m => m.local?.path && this.explorer.musicLibrary.tracks.has(m.local.path))
+            .map(m => [m.device.handle, m.local.path]));
+        const onComputer = handles.filter(h => localOf.has(h));
+        const missing = handles.filter(h => !localOf.has(h));
         const tidy = (v) => (window.songFixerLogic ? window.songFixerLogic.cleanTagText(v) : v) || v || '';
-        const name = [tidy(device.title) || device.filename || 'this song', tidy(device.artist)].filter(Boolean).join(' \u2014 ');
-        const choice = await window.electronAPI.zuneRemoveAsk(name, onComputer ? match.local.path : null);
+        const d0 = byHandle.get(handles[0]);
+        const name = handles.length === 1
+            ? [tidy(d0.title) || d0.filename || 'this song', tidy(d0.artist)].filter(Boolean).join(' \u2014 ')
+            : `${handles.length} songs`;
+        const choice = await window.electronAPI.zuneRemoveAsk(name,
+            handles.length === 1 && onComputer.length ? localOf.get(handles[0]) : null,
+            { total: handles.length, missing: missing.length });
         if (choice === 'cancel') return;
         this._removingOne = true;
         try {
-            if (choice === 'copy') {
-                // Copy just this song (keeping whatever else was ticked), then check it landed
-                const before = new Set(this.diffSelectedHandles);
-                this.diffSelectedHandles = new Set([handle]);
-                try {
-                    await this._pullFromDevice();
-                } finally {
-                    const failed = this.diffSelectedHandles.has(handle);
-                    this.diffSelectedHandles = before;
-                    this.diffSelectedHandles.delete(handle);
-                    if (failed) this.diffSelectedHandles.add(handle);
-                }
-                const copied = this._pulledMap()[handle];
-                if (!copied || this.diffSelectedHandles.has(handle)) {
-                    this.explorer.showToast?.(`\u201c${name}\u201d wasn\u2019t copied, so it was left on the zune`);
-                    this.diffSelectedHandles.delete(handle);
-                    this._renderDiffList();
-                    return;
-                }
+            let toRemove = handles;
+            if (choice === 'copy' && missing.length) {
+                const copied = await this.copyToComputer(missing);
+                toRemove = [...onComputer, ...copied];
+                const notCopied = missing.length - copied.length;
+                if (notCopied) this.explorer.showToast?.(`${notCopied} song${notCopied === 1 ? ' wasn\u2019t' : 's weren\u2019t'} copied, so ${notCopied === 1 ? 'it was' : 'they were'} left on the zune`);
+                if (!toRemove.length) { this._renderDiffList?.(); return; }
             }
-            const result = await this.deleteDeviceItems([handle]);
-            const err = (result.errors || [])[0];
-            this.explorer.showToast?.(err
-                ? `couldn\u2019t remove \u201c${name}\u201d from the zune: ${err.error}`
-                : `removed \u201c${name}\u201d from the zune` + (choice === 'copy' ? ' \u2014 it\u2019s on your computer now' : ''));
+            const result = await this.deleteDeviceItems(toRemove);
+            const errs = result.errors || [];
+            const removed = toRemove.length - errs.length;
+            this.explorer.showToast?.(errs.length
+                ? `removed ${removed} from the zune; ${errs.length} couldn\u2019t be removed (${errs[0].error})`
+                : (handles.length === 1 ? `removed \u201c${name}\u201d from the zune` : `removed ${removed} song${removed === 1 ? '' : 's'} from the zune`) +
+                  (choice === 'copy' && missing.length ? ' \u2014 copies are on your computer' : ''));
         } catch (e) {
-            this.explorer.showToast?.(`couldn\u2019t remove \u201c${name}\u201d: ${e.message}`);
+            this.explorer.showToast?.(`couldn\u2019t remove from the zune: ${e.message}`);
         } finally {
             this._removingOne = false;
         }
+    }
+
+    removeOneFromDevice(handle) {
+        return this.removeFromDevice([handle]);
     }
 
     async _deleteFromDevice() {
@@ -5637,8 +5674,11 @@ class ZuneExplorer {
         if (this.songsScroller) { this.songsScroller.destroy(); this.songsScroller = null; }
         const COLS = [
             ['play', ''], ['title', 'title'], ['duration', 'time'], ['artist', 'artist'], ['album', 'album'],
-            ['genre', 'genre'], ['year', 'year'], ['kbps', 'quality'], ['restore', ''], ['format', 'type'],
+            ['genre', 'genre'], ['year', 'year'], ['kbps', 'quality'], ['restore', ''], ['format', 'type'], ['where', 'on'],
         ];
+        // Which songs are on the Zune (connected, or as of its last scan)
+        const zm = this._zuneMembership;
+        if (!zm && this.musicLibrary.scanState !== 'scanning') this._loadZuneMembership();
         // Measured sound quality (fake 320s etc.), saved between runs
         if (!this.musicLibrary.quality) {
             this.musicLibrary.quality = new Map();
@@ -5674,9 +5714,24 @@ class ZuneExplorer {
                 drm: !!t.drm,
             });
             const r = allRows[allRows.length - 1];
+            r.where = zm && !zm.none ? (zm.onZune.has(path) ? 'both' : 'computer') : '';
             r.q = r.drm
                 ? { level: 'drm', reason: 'copy-protected (Zune Pass / DRM): it only plays on the zune \u2014 it can\u2019t be played, converted or restored here' }
                 : verdict({ kbps: r.kbps, format: r.format, cutoffHz: this.musicLibrary.quality.get(path) || 0 });
+        }
+        // Songs only on the Zune get rows too (they can't be played here)
+        if (zm && !zm.none) {
+            const tidy = (v) => (window.songFixerLogic ? window.songFixerLogic.cleanTagText(v) : v) || '';
+            for (const d of zm.zuneOnly) {
+                const secs = d.duration > 36000 ? d.duration / 1000 : (d.duration || 0);
+                const fn = d.filename || '';
+                allRows.push({
+                    path: 'zune:' + d.handle, handle: d.handle, zuneOnly: true,
+                    title: tidy(d.title) || d.title || fn || '?', artist: tidy(d.artist), album: tidy(d.album) || '', genre: d.genre || '',
+                    year: 0, duration: secs, kbps: kbpsFrom(d.size || 0, secs),
+                    format: /\.[a-z0-9]{2,4}$/i.test(fn) ? fn.split('.').pop().toLowerCase() : '', where: 'zune', q: null,
+                });
+            }
         }
 
         if (!st) {
@@ -5703,6 +5758,8 @@ class ZuneExplorer {
             shuffle.className = 'songs-table-shuffle-btn';
             shuffle.textContent = '\u2928 shuffle';
             shuffle.title = 'play these songs (or the selected ones) in random order';
+            const where = document.createElement('div');
+            where.className = 'songs-table-where';
             top.append(search, count, shuffle, poor, check);
 
             // Shown when songs are selected (click, \u2318-click, shift-click, \u2318A)
@@ -5710,6 +5767,7 @@ class ZuneExplorer {
             selbar.className = 'songs-table-selbar';
             selbar.style.display = 'none';
             root.appendChild(top);
+            root.appendChild(where);
             root.appendChild(selbar);
 
             const head = document.createElement('div');
@@ -5722,7 +5780,7 @@ class ZuneExplorer {
             container.appendChild(root);
 
             const state = { root, head, body, search, count, poor, check, selbar, rows: [], view: [], sortKey: 'title', sortDir: 1, query: '', poorOnly: false,
-                selected: new Set(), anchor: null };
+                selected: new Set(), anchor: null, where, whereFilter: 'all' };
             shuffle.addEventListener('click', () => this._songsTableShuffle());
             root.tabIndex = -1; // so \u2318A / Delete / Esc reach the table
             root.addEventListener('keydown', (e) => {
@@ -5737,7 +5795,8 @@ class ZuneExplorer {
                     this._songsTableSelChanged();
                 } else if ((e.key === 'Backspace' || e.key === 'Delete') && state.selected.size) {
                     e.preventDefault(); e.stopPropagation();
-                    this.trashSongs([...state.selected]);
+                    const local = [...state.selected].filter(p => !p.startsWith('zune:'));
+                    if (local.length) this.trashSongs(local);
                 }
             });
             poor.addEventListener('click', () => { state.poorOnly = !state.poorOnly; this._songsTableUpdate(false); });
@@ -5756,7 +5815,11 @@ class ZuneExplorer {
                     for (const [key] of COLS) {
                         const cell = document.createElement('div');
                         cell.className = 'songs-table-cell col-' + key;
-                        if (key === 'play') cell.appendChild(self._songPlayButton(r.path));
+                        if (key === 'play') { if (!r.zuneOnly) cell.appendChild(self._songPlayButton(r.path)); }
+                        else if (key === 'where') {
+                            cell.textContent = r.where === 'both' ? 'both' : r.where === 'zune' ? 'zune only' : r.where === 'computer' ? 'computer' : '';
+                            if (r.where) cell.classList.add('where-' + r.where);
+                        }
                         else if (key === 'duration') cell.textContent = r.duration ? self.formatDuration(r.duration) : '';
                         else if (key === 'kbps') {
                             if (r.drm) {
@@ -5767,6 +5830,7 @@ class ZuneExplorer {
                                 if (r.q) cell.classList.add('quality-warn');
                             }
                         } else if (key === 'restore') {
+                            if (r.zuneOnly) { el.appendChild(cell); continue; }
                             const b = document.createElement('button');
                             b.className = 'song-restore-btn';
                             b.dataset.path = r.path;
@@ -5776,7 +5840,8 @@ class ZuneExplorer {
                         }
                         else if (key === 'year') cell.textContent = r.year || '';
                         else cell.textContent = r[key] || '';
-                        if (key === 'kbps' && r.q) cell.title = r.q.reason;
+                        if (key === 'where' && r.where) cell.title = r.where === 'both' ? 'on your computer and on the zune' : r.where === 'zune' ? 'only on the zune \u2014 right-click to copy it to your computer' : 'only on your computer';
+                        else if (key === 'kbps' && r.q) cell.title = r.q.reason;
                         else if (key !== 'play' && key !== 'restore') cell.title = cell.textContent;
                         el.appendChild(cell);
                     }
@@ -5827,7 +5892,7 @@ class ZuneExplorer {
                 const row = e.target.closest('.vs-row');
                 if (!row || e.target.closest('.song-play-btn')) return;
                 const r = state.view.find(x => x.path === row.dataset.trackPath);
-                if (r) this._songRowPlay(r, state.view);
+                if (r && !r.zuneOnly) this._songRowPlay(r, state.view.filter(x => !x.zuneOnly));
             });
             body.addEventListener('contextmenu', (e) => {
                 const row = e.target.closest('.vs-row');
@@ -5839,13 +5904,16 @@ class ZuneExplorer {
                     const t = this.musicLibrary.tracks.get(x);
                     return t ? this.getTrackFile({ ...t, path: x }) : null;
                 }).filter(Boolean);
-                if (files.length) this.showMusicItemContextMenu(e, files);
+                const zuneItems = this._songsTableZuneActions();
+                if (files.length) this.showMusicItemContextMenu(e, files, zuneItems);
+                else if (zuneItems.length) this.showDynamicContextMenu(e, zuneItems);
             });
             body.addEventListener('dragstart', (e) => {
                 const row = e.target.closest('.vs-row');
                 if (!row) return;
                 const p = row.dataset.trackPath;
-                const paths = state.selected.has(p) ? [...state.selected] : [p];
+                const paths = (state.selected.has(p) ? [...state.selected] : [p]).filter(x => !x.startsWith('zune:'));
+                if (!paths.length) { e.preventDefault(); return; }
                 e.dataTransfer.setData('application/x-zune-paths', JSON.stringify(paths));
                 e.dataTransfer.effectAllowed = 'copy';
             });
@@ -5865,6 +5933,10 @@ class ZuneExplorer {
             ? st.rows.filter(r => r.title.toLowerCase().includes(q) || r.artist.toLowerCase().includes(q) ||
                 r.album.toLowerCase().includes(q) || r.genre.toLowerCase().includes(q))
             : st.rows.slice();
+        this._songsTableWhereBar(view);
+        if (st.whereFilter === 'zune') view = view.filter(r => r.where === 'both' || r.where === 'zune');
+        else if (st.whereFilter === 'computer') view = view.filter(r => r.where === 'computer');
+        else if (st.whereFilter === 'zuneonly') view = view.filter(r => r.where === 'zune');
         const poorCount = view.filter(r => r.q).length;
         if (st.poorOnly) view = view.filter(r => r.q);
         st.poor.textContent = st.poorOnly ? `show all songs` : `\u26A0 poor quality only (${poorCount})`;
@@ -5899,6 +5971,7 @@ class ZuneExplorer {
             st.head.appendChild(h);
         }
         st.count.textContent = `${view.length} song${view.length === 1 ? '' : 's'}`;
+        st.view = view;
         st.scroller.setData(view.map(r => ({ type: 'trow', data: r })), { preserveScroll });
     }
 
@@ -6063,7 +6136,7 @@ class ZuneExplorer {
         bar.style.display = n ? '' : 'none';
         while (bar.firstChild) bar.removeChild(bar.firstChild);
         if (!n) return;
-        const files = () => st.view.filter(r => st.selected.has(r.path)).map(r => {
+        const files = () => st.view.filter(r => st.selected.has(r.path) && !r.zuneOnly).map(r => {
             const t = this.musicLibrary.tracks.get(r.path);
             return this.getTrackFile({ ...(t || {}), path: r.path });
         });
@@ -6080,16 +6153,19 @@ class ZuneExplorer {
             bar.appendChild(b);
             return b;
         };
-        btn('\u25B6 play', 'play the selected songs in order', () => {
-            const sel = st.view.filter(r => st.selected.has(r.path));
+        const anyLocal = [...st.selected].some(p => !p.startsWith('zune:'));
+        if (anyLocal) btn('\u25B6 play', 'play the selected songs in order', () => {
+            const sel = st.view.filter(r => st.selected.has(r.path) && !r.zuneOnly);
             if (!sel.length) return;
             if (this.audioPlayer.shuffle) this.audioPlayer.setShuffle(false);
             this._songRowPlay(sel[0], sel);
         });
-        btn('\u2928 shuffle', 'play the selected songs in random order', () => this._songsTableShuffle());
-        btn('+ add to playlist', 'add the selected songs to a playlist', (e) => this.showDynamicContextMenu(e, this.buildPlaylistSubmenuItems(files())));
-        btn('add to now playing', 'add to the end of what\u2019s playing', () => { this.addToNowPlaying(files()); this.showToast?.(`added ${n} song${n === 1 ? '' : 's'} to now playing`); });
-        btn('move to trash', 'move the selected songs to the Trash (their zune copies are removed on \u201cupdate zune\u201d)', () => this.trashSongs([...st.selected]), 'danger');
+        if (anyLocal) btn('\u2928 shuffle', 'play the selected songs in random order', () => this._songsTableShuffle());
+        if (anyLocal) btn('+ add to playlist', 'add the selected songs to a playlist', (e) => this.showDynamicContextMenu(e, this.buildPlaylistSubmenuItems(files())));
+        if (anyLocal) btn('add to now playing', 'add to the end of what\u2019s playing', () => { this.addToNowPlaying(files()); this.showToast?.(`added ${n} song${n === 1 ? '' : 's'} to now playing`); });
+        for (const z of this._songsTableZuneActions()) btn(z.label.toLowerCase(), z.title || '', z.action);
+        const localSel = [...st.selected].filter(p => !p.startsWith('zune:'));
+        if (localSel.length) btn('move to trash', 'move the selected songs to the Trash (their zune copies are removed on \u201cupdate zune\u201d)', () => this.trashSongs(localSel), 'danger');
         btn('clear', 'deselect (Esc)', () => { st.selected.clear(); this._songsTableSelChanged(); }, 'dim');
         const hint = document.createElement('span');
         hint.className = 'songs-table-selhint';
@@ -6097,11 +6173,104 @@ class ZuneExplorer {
         bar.appendChild(hint);
     }
 
+    /** Zune actions for the selected rows: copy (zune-only songs), remove from zune. */
+    _songsTableZuneActions() {
+        const st = this.songsTable;
+        const zm = this._zuneMembership;
+        if (!st || !zm || zm.none) return [];
+        const sel = st.rows.filter(r => st.selected.has(r.path));
+        const zuneOnly = sel.filter(r => r.zuneOnly).map(r => r.handle);
+        const onZune = [...zuneOnly, ...sel.filter(r => r.where === 'both').map(r => zm.onZune.get(r.path)).filter(h => h != null)];
+        const zp = this.zunePanel;
+        const ready = zp && zp.state === 'connected' && zp.browseData;
+        const need = () => this.showToast?.('connect your zune (and open it in the zune panel) to do this');
+        const items = [];
+        if (zuneOnly.length) items.push({ label: `Copy to Computer (${zuneOnly.length})`, title: 'copy these songs from the zune to your computer', action: () => (ready ? zp.copyToComputer(zuneOnly) : need()) });
+        if (onZune.length) items.push({ label: `Remove from Zune (${onZune.length})`, title: 'songs not on your computer are offered to be copied first', action: () => (ready ? zp.removeFromDevice(onZune) : need()) });
+        return items;
+    }
+
+    /** "all / on zune / only on computer / only on zune" above the songs table. */
+    _songsTableWhereBar(rows) {
+        const st = this.songsTable;
+        const zm = this._zuneMembership;
+        const bar = st.where;
+        while (bar.firstChild) bar.removeChild(bar.firstChild);
+        if (!zm || zm.none) { bar.style.display = 'none'; return; }
+        bar.style.display = '';
+        const n = (w) => rows.filter(w).length;
+        const opts = [
+            ['all', 'all songs', rows.length],
+            ['zune', 'on zune', n(r => r.where === 'both' || r.where === 'zune')],
+            ['computer', 'only on computer', n(r => r.where === 'computer')],
+            ['zuneonly', 'only on zune', n(r => r.where === 'zune')],
+        ];
+        for (const [key, label, count] of opts) {
+            const b = document.createElement('button');
+            b.className = 'songs-table-where-btn' + (st.whereFilter === key ? ' active' : '');
+            b.textContent = `${label} (${count})`;
+            b.addEventListener('click', () => { st.whereFilter = key; this._songsTableUpdate(false); });
+            bar.appendChild(b);
+        }
+        const note = document.createElement('span');
+        note.className = 'songs-table-where-note';
+        if (zm.source === 'connected' && this.zunePanel?.state === 'connected') note.textContent = 'zune connected';
+        else {
+            const when = zm.when ? new Date(zm.when) : null;
+            note.textContent = `zune as of its last scan${when && !isNaN(when) ? ' (' + when.toLocaleDateString() + ')' : ''} \u2014 connect it to refresh`;
+        }
+        bar.appendChild(note);
+    }
+
+    /** Work out which library songs are on the Zune; re-draws the table when done. */
+    async _loadZuneMembership() {
+        if (this._zuneMembershipLoading) return;
+        this._zuneMembershipLoading = true;
+        try {
+            const zp = this.zunePanel;
+            let device = null, key = null, source = 'cached', when = null;
+            if (zp?.browseData?.music) {
+                device = zp.browseData.music;
+                key = zp.deviceKey;
+                source = zp.state === 'connected' ? 'connected' : 'cached';
+                when = zp.cachedData?.lastScanned || null;
+            } else {
+                const r = await window.electronAPI.zuneCacheLatest?.();
+                if (r?.success && r.data?.contents?.music) {
+                    device = r.data.contents.music;
+                    key = r.data.deviceKey;
+                    when = r.data.lastScanned || null;
+                }
+            }
+            if (!device || !zp) { this._zuneMembership = { none: true }; return; }
+            let pulled = {};
+            try { pulled = JSON.parse(localStorage.getItem('zune-pulled:' + (key || '')) || '{}'); } catch { pulled = {}; }
+            const res = zp._computeMusicDiff(device, pulled);
+            const onZune = new Map();
+            for (const m of res.matched) if (m.local?.path && !onZune.has(m.local.path)) onZune.set(m.local.path, m.device.handle);
+            this._zuneMembership = { onZune, zuneOnly: res.deviceOnly, source, when };
+        } catch (e) {
+            console.warn('zune membership failed', e);
+            this._zuneMembership = { none: true };
+        } finally {
+            this._zuneMembershipLoading = false;
+        }
+        this._songsTableRefreshSoon(0);
+    }
+
+    _songsTableRefreshSoon(wait = 600) {
+        clearTimeout(this._songsTableRefreshTimer);
+        this._songsTableRefreshTimer = setTimeout(() => {
+            const st = this.songsTable;
+            if (st && st.root.isConnected) this.renderMusicSongsTable(st.root.parentElement);
+        }, wait);
+    }
+
     /** Shuffle-play the selected songs, or every song shown. */
     _songsTableShuffle() {
         const st = this.songsTable;
         if (!st) return;
-        const list = st.selected.size ? st.view.filter(r => st.selected.has(r.path)) : st.view;
+        const list = (st.selected.size ? st.view.filter(r => st.selected.has(r.path)) : st.view).filter(r => !r.zuneOnly);
         if (!list.length) return;
         const first = list[Math.floor(Math.random() * list.length)];
         const byPath = new Map(this.categorizedFiles.music.map(f => [f.path, f]));

@@ -4421,7 +4421,7 @@ body.platform-linux .now-playing-panel {
 .songs-table-count { font-size: 12px; color: var(--zune-text-dim); }
 .songs-table-row {
   display: grid; align-items: center;
-  grid-template-columns: 40px minmax(160px, 2.2fr) 56px minmax(120px, 1.4fr) minmax(120px, 1.6fr) minmax(70px, 0.9fr) 48px 90px 62px 44px;
+  grid-template-columns: 40px minmax(160px, 2.2fr) 56px minmax(120px, 1.4fr) minmax(120px, 1.6fr) minmax(70px, 0.9fr) 48px 90px 62px 44px 78px;
   column-gap: 12px; padding: 0 8px; box-sizing: border-box;
   font-size: 13px; color: #ddd; border-bottom: 1px solid rgba(255,255,255,0.04);
 }
@@ -4527,3 +4527,14 @@ body.zune-panel-open .content-area { padding-right: 372px; }
 .songs-table-selbtn.danger { color: #ff6b8b; border-color: rgba(255, 107, 139, 0.4); }
 .songs-table-selbtn.dim { color: #999; }
 .songs-table-selhint { font-size: 11px; color: #777; margin-left: auto; }
+
+/* Songs table: computer / zune / both */
+.songs-table-where { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+.songs-table-where-btn { background: none; border: 1px solid #2c2c2c; color: #999; font-size: 12px; padding: 3px 10px; border-radius: 12px; cursor: pointer; }
+.songs-table-where-btn:hover { color: #fff; }
+.songs-table-where-btn.active { color: #fff; border-color: var(--zune-accent, #ff6900); background: rgba(255,105,0,0.12); }
+.songs-table-where-note { font-size: 11px; color: #777; margin-left: 8px; }
+.songs-table-cell.col-where { font-size: 12px; }
+.songs-table-cell.col-where.where-both { color: #8fd18f; }
+.songs-table-cell.col-where.where-computer { color: #888; }
+.songs-table-cell.col-where.where-zune { color: #ff9a4d; }

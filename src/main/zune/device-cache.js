@@ -34,6 +34,20 @@ class DeviceCache {
     await fs.writeFile(this._filePath(deviceKey), JSON.stringify(payload));
   }
 
+  /** The most recently saved device's cache, or null. */
+  async latest() {
+    let names;
+    try { names = (await fs.readdir(this.cacheDir)).filter(n => n.endsWith('.json')); } catch { return null; }
+    let best = null;
+    for (const n of names) {
+      try {
+        const st = await fs.stat(path.join(this.cacheDir, n));
+        if (!best || st.mtimeMs > best.t) best = { n, t: st.mtimeMs };
+      } catch { /* skip */ }
+    }
+    return best ? this.load(best.n.slice(0, -5)) : null;
+  }
+
   async invalidate(deviceKey) {
     try {
       await fs.unlink(this._filePath(deviceKey));

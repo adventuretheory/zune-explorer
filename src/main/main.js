@@ -614,6 +614,15 @@ ipcMain.handle('zune-cache-load', async (event, deviceKey) => {
   }
 });
 
+// The most recently scanned Zune, for showing what's on it while it isn't plugged in
+ipcMain.handle('zune-cache-latest', async () => {
+  try {
+    return { success: true, data: await deviceCache.latest() };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
 ipcMain.handle('zune-cache-save', async (event, deviceKey, cacheData) => {
   try {
     await deviceCache.save(deviceKey, cacheData);
@@ -931,8 +940,28 @@ ipcMain.handle('zune-pull-check', async (event, destDir, items) => {
 });
 
 // Removing one song from the Zune. Returns 'remove' | 'copy' | 'cancel'.
-ipcMain.handle('zune-remove-ask', async (event, name, localPath) => {
+ipcMain.handle('zune-remove-ask', async (event, name, localPath, counts = {}) => {
   const song = String(name || 'this song').slice(0, 200);
+  const total = Number(counts?.total) || 1;
+  const missing = Number(counts?.missing) || 0;
+  if (total > 1) {
+    if (!missing) {
+      const { response } = await dialog.showMessageBox(mainWindow, {
+        type: 'question', buttons: ['Remove from Zune', 'Cancel'], defaultId: 0, cancelId: 1,
+        message: `Remove ${total} songs from your Zune?`,
+        detail: 'They all stay on your computer.',
+      });
+      return response === 0 ? 'remove' : 'cancel';
+    }
+    const { response } = await dialog.showMessageBox(mainWindow, {
+      type: 'warning',
+      buttons: ['Copy to Computer, Then Remove', 'Remove Without Copying', 'Cancel'],
+      defaultId: 0, cancelId: 2,
+      message: `${missing} of these ${total} songs ${missing === 1 ? 'isn\u2019t' : 'aren\u2019t'} on your computer`,
+      detail: 'Copy them to your computer first? Each one is only removed from the Zune once its copy has worked. The others are already on your computer and are just removed from the Zune.',
+    });
+    return ['copy', 'remove', 'cancel'][response] || 'cancel';
+  }
   if (typeof localPath === 'string' && localPath) {
     const { response } = await dialog.showMessageBox(mainWindow, {
       type: 'question',
