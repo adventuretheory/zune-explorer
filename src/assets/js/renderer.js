@@ -762,6 +762,7 @@ class ZuneSyncPanel {
             window.electronAPI.offZuneBrowseProgress(this._browseProgressHandler);
         }
         this._browseProgressHandler = window.electronAPI.onZuneBrowseProgress((data) => {
+            if (this._quietRefreshing) return; // background re-read: leave the page alone
             if (data.phase === 'scanning') {
                 const found = (data.contents.music?.length || 0) +
                               (data.contents.videos?.length || 0) +
@@ -889,6 +890,42 @@ class ZuneSyncPanel {
         if (!this.browseData) return;
         this.devicePodcastsScanned = Array.isArray(this.browseData.podcasts);
         if (!this.devicePodcastsScanned) this.browseData.podcasts = [];
+    }
+
+    /**
+     * Read the Zune again in the background (after sending songs from the
+     * library): the lists and the songs table update, but nothing opens or
+     * moves - whatever page you're on stays as it is.
+     */
+    async refreshQuietly() {
+        if (this.state !== 'connected' || this._quietRefreshing) return;
+        this._quietRefreshing = true;
+        this._deviceScanning = true; // "update zune" waits for complete lists
+        try {
+            if (this.deviceKey) await window.electronAPI.zuneCacheInvalidate(this.deviceKey);
+            const result = await window.electronAPI.zuneBrowseContents();
+            if (result?.success) {
+                this.browseData = result.contents;
+                this._normalizeBrowseData();
+                this.browseAlbumArtMap = result.contents.albumArtMap || this.browseAlbumArtMap || {};
+                await this._saveDeviceCache();
+                if (this.diffActive) {
+                    this._computeDiff();
+                    this._computeStorageBreakdown?.();
+                    this._renderDiffSummary();
+                    this._destroyDiffScroller();
+                    this._renderDiffList();
+                }
+                this.explorer._zuneMembership = null;
+                this.explorer._songsTableRefreshSoon?.(100);
+            }
+        } catch (e) {
+            console.warn('quiet zune refresh failed', e);
+        } finally {
+            this._quietRefreshing = false;
+            this._deviceScanning = false;
+            this._refreshFixedButton?.();
+        }
     }
 
     async _saveDeviceCache() {
@@ -5800,7 +5837,7 @@ class ZuneExplorer {
     renderMusicSongsTable(container) {
         if (this.songsScroller) { this.songsScroller.destroy(); this.songsScroller = null; }
         const COLS = [
-            ['play', ''], ['title', 'title'], ['duration', 'time'], ['artist', 'artist'], ['album', 'album'],
+            ['check', ''], ['play', ''], ['title', 'title'], ['duration', 'time'], ['artist', 'artist'], ['album', 'album'],
             ['genre', 'genre'], ['year', 'year'], ['kbps', 'quality'], ['restore', ''], ['format', 'type'], ['where', 'on'],
         ];
         // Which songs are on the Zune (connected, or as of its last scan)
@@ -5945,7 +5982,14 @@ class ZuneExplorer {
                     for (const [key] of COLS) {
                         const cell = document.createElement('div');
                         cell.className = 'songs-table-cell col-' + key;
-                        if (key === 'play') {
+                        if (key === 'check') {
+                            const cb = document.createElement('input');
+                            cb.type = 'checkbox';
+                            cb.className = 'song-row-check';
+                            cb.checked = !!self.songsTable && self.songsTable.selected.has(r.path);
+                            cb.title = 'tick to select (shift-tick for a range)';
+                            cell.appendChild(cb);
+                        } else if (key === 'play') {
                             if (!r.zuneOnly) cell.appendChild(self._songPlayButton(r.path));
                             else {
                                 // Only on the Zune: copied off it, then played
@@ -5991,7 +6035,7 @@ class ZuneExplorer {
                                 : 'only on the zune \u2014 right-click to copy it to your computer')
                             : 'only on your computer';
                         else if (key === 'kbps' && (r.q || r.g)) cell.title = r.q ? r.q.reason : r.g.reason;
-                        else if (key !== 'play' && key !== 'restore') cell.title = cell.textContent;
+                        else if (key !== 'play' && key !== 'restore' && key !== 'check') cell.title = cell.textContent;
                         el.appendChild(cell);
                     }
                 },
@@ -6020,6 +6064,23 @@ class ZuneExplorer {
             body.addEventListener('click', (e) => {
                 const rb = e.target.closest('.song-restore-btn');
                 if (rb) { e.stopPropagation(); this.openRestoreDialog(rb.dataset.path); return; }
+                const tick = e.target.closest('.song-row-check');
+                if (tick) {
+                    e.stopPropagation();
+                    const row = tick.closest('.vs-row');
+                    const p = row && row.dataset.trackPath;
+                    if (!p) return;
+                    if (e.shiftKey && state.anchor) {
+                        const a = state.view.findIndex(x => x.path === state.anchor);
+                        const b = state.view.findIndex(x => x.path === p);
+                        if (a !== -1 && b !== -1) for (let i = Math.min(a, b); i <= Math.max(a, b); i++) state.selected.add(state.view[i].path);
+                    } else if (tick.checked) state.selected.add(p);
+                    else state.selected.delete(p);
+                    state.anchor = p;
+                    root.focus({ preventScroll: true });
+                    this._songsTableSelChanged();
+                    return;
+                }
                 const zb = e.target.closest('.zune-only-play');
                 if (zb) {
                     e.stopPropagation();
@@ -6152,7 +6213,23 @@ class ZuneExplorer {
         for (const [k, label] of st.COLS) {
             const h = document.createElement('div');
             h.className = 'songs-table-cell col-' + k + (k === key || k === key2 ? ' sorted' : '');
-            if (k !== 'play' && k !== 'restore') {
+            if (k === 'check') {
+                const cb = document.createElement('input');
+                cb.type = 'checkbox';
+                cb.className = 'song-row-check';
+                cb.title = 'select every song shown / none';
+                const n = view.filter(r => st.selected.has(r.path)).length;
+                cb.checked = n > 0 && n === view.length;
+                cb.indeterminate = n > 0 && n < view.length;
+                cb.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    if (cb.checked) for (const r of st.view) st.selected.add(r.path);
+                    else st.selected.clear();
+                    this._songsTableSelChanged();
+                });
+                st.headCheck = cb;
+                h.appendChild(cb);
+            } else if (k !== 'play' && k !== 'restore') {
                 h.dataset.key = k;
                 const arrow = (d) => (d > 0 ? ' \u25B4' : ' \u25BE');
                 h.textContent = label + (k === key ? arrow(dir) + (key2 ? '1' : '') : k === key2 ? arrow(dir2) + '2' : '');
@@ -6317,7 +6394,15 @@ class ZuneExplorer {
         if (!st) return;
         // Just move the highlight: redrawing the rows would swallow a double-click
         for (const row of st.body.querySelectorAll('.vs-row')) {
-            row.classList.toggle('selected', st.selected.has(row.dataset.trackPath));
+            const on = st.selected.has(row.dataset.trackPath);
+            row.classList.toggle('selected', on);
+            const cb = row.querySelector('.song-row-check');
+            if (cb) cb.checked = on;
+        }
+        if (st.headCheck) {
+            const n = st.view.filter(r => st.selected.has(r.path)).length;
+            st.headCheck.checked = n > 0 && n === st.view.length;
+            st.headCheck.indeterminate = n > 0 && n < st.view.length;
         }
         this._songsTableSelBar();
     }
@@ -6336,7 +6421,7 @@ class ZuneExplorer {
         if (!n) {
             const tip = document.createElement('span');
             tip.className = 'songs-table-selhint';
-            tip.textContent = 'click a song to select it \u00b7 double-click to play \u00b7 \u2318-click to add more, shift-click for a range, \u2318A for all';
+            tip.textContent = 'tick songs on the left to select them (shift-tick for a range) \u00b7 double-click to play \u00b7 \u2318A for all';
             bar.appendChild(tip);
             return;
         }
@@ -6450,8 +6535,8 @@ class ZuneExplorer {
         if (sent || failed) {
             this.showToast?.(`${sent} song${sent === 1 ? '' : 's'} sent to your zune` +
                 (already ? `, ${already} already there` : '') + (failed ? `, ${failed} didn\u2019t go` : ''));
-            // Read the Zune again so lists and the "on" column show them
-            if (sent) zp._rescanDevice?.();
+            // Read the Zune again (quietly) so lists and the "on" column show them
+            if (sent) (zp.refreshQuietly ? zp.refreshQuietly() : zp._rescanDevice?.());
         }
     }
 
@@ -6496,7 +6581,7 @@ class ZuneExplorer {
 
     /** Fresh Zune list + "which songs are on it", after something changed on the Zune. */
     async _refreshZuneMembership({ rescan = false } = {}) {
-        if (rescan) await this.zunePanel?._rescanDevice?.();
+        if (rescan) await (this.zunePanel?.refreshQuietly ? this.zunePanel.refreshQuietly() : this.zunePanel?._rescanDevice?.());
         // One already being worked out would be from before the change: wait it out
         for (let i = 0; this._zuneMembershipLoading && i < 100; i++) await new Promise(r => setTimeout(r, 100));
         this._zuneMembership = null;
