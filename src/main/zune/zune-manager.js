@@ -366,7 +366,9 @@ class ZuneManager extends EventEmitter {
               let needsConvert = CONVERTIBLE_AUDIO.has(ext);
 
               // Read metadata from the original file before any conversion
-              const metadata = await this._readMetadata(filePath);
+              // (song details only exist in audio files, not pictures)
+              const isAudioFile = ZUNE_NATIVE_AUDIO.has(ext) || CONVERTIBLE_AUDIO.has(ext);
+              const metadata = isAudioFile ? await this._readMetadata(filePath) : {};
 
               // Enrich with cached MusicBrainz metadata
               if (this.metadataCache && metadata.artist && metadata.album) {
@@ -456,7 +458,7 @@ class ZuneManager extends EventEmitter {
               }
 
               // Set metadata via MTP object properties
-              if (objectHandle) {
+              if (objectHandle && isAudioFile) {
                 console.log(`ZuneManager: setting metadata for handle ${objectHandle}`);
                 await this._setObjectMetadata(objectHandle, metadata);
 
@@ -549,8 +551,13 @@ class ZuneManager extends EventEmitter {
       }
 
       if (this.connected) {
-        this.storageInfo = await this.mtp.getStorageInfo(this.storageId);
+        try {
+          this.storageInfo = await this._withUsbTimeout(10000, () => this.mtp.getStorageInfo(this.storageId));
+        } catch (err) {
+          console.log(`ZuneManager: couldn't refresh free space: ${err.message}`);
+        }
       }
+      console.log(`ZuneManager: transfer finished \u2014 ${succeeded.length} sent, ${failed.length} failed. The Zune shows its sync screen until you eject or unplug it.`);
 
       if (!this.cancelRequested) {
         this.emit('transfer-progress', {
