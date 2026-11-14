@@ -256,7 +256,13 @@ class ZuneManager extends EventEmitter {
     }
   }
 
-  async sendFiles(filePaths) {
+  /**
+   * @param {string[]} filePaths
+   * @param {object} [opts]
+   * @param {boolean} [opts.replaceArt] set album art on albums that already
+   *   exist too (used when updating fixed songs whose art changed)
+   */
+  async sendFiles(filePaths, { replaceArt = false } = {}) {
     if (!this.connected) {
       throw new Error('No Zune device connected');
     }
@@ -467,7 +473,7 @@ class ZuneManager extends EventEmitter {
       // Create abstract audio album objects and link tracks to them.
       // The Zune requires these to display artist/album metadata in its UI.
       if (albumMap.size > 0 && this.connected && !this.cancelRequested) {
-        await this._createAlbumObjects(albumMap);
+        await this._createAlbumObjects(albumMap, { replaceArt });
       }
 
       if (this.connected) {
@@ -501,7 +507,7 @@ class ZuneManager extends EventEmitter {
     }
   }
 
-  async _createAlbumObjects(albumMap) {
+  async _createAlbumObjects(albumMap, { replaceArt = false } = {}) {
     // The Zune uses Artist objects (format 0xB218) and AbstractAudioAlbum
     // objects (0xBA03) to group tracks. Albums and tracks link to an artist
     // via the ArtistId (0xDAB9) property; tracks attach to an album via
@@ -660,7 +666,8 @@ class ZuneManager extends EventEmitter {
         // Album art: only set on a freshly created album. Don't overwrite art
         // already present on a reused album — the user (or a prior good sync)
         // may have set something better.
-        if (isNew && albumArt && albumArt.data) {
+        // When updating songs whose art was changed on purpose, replace it.
+        if ((isNew || replaceArt) && albumArt && albumArt.data) {
           const artData = Buffer.isBuffer(albumArt.data) ? albumArt.data : Buffer.from(albumArt.data);
           console.log(`ZuneManager: attempting album art (${artData.length} bytes, ${albumArt.format})`);
 

@@ -444,9 +444,9 @@ ipcMain.handle('zune-device-info', async () => {
   return zuneManager.getDeviceInfo();
 });
 
-ipcMain.handle('zune-send-files', async (event, filePaths) => {
+ipcMain.handle('zune-send-files', async (event, filePaths, opts) => {
   try {
-    const result = await zuneManager.sendFiles(filePaths);
+    const result = await zuneManager.sendFiles(filePaths, { replaceArt: !!opts?.replaceArt });
     return { success: true, ...(result || {}) };
   } catch (error) {
     return { success: false, error: error.message };
@@ -1309,6 +1309,42 @@ ipcMain.handle('song-fixer-add-art', async (event, batchId, filePath, info, opts
     }
     const r = await songFixer.addCover(String(batchId), filePath, image, { replace: !!opts?.replace });
     return { success: true, ...r };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+// Website names out of one song's tags
+ipcMain.handle('song-fixer-strip-sites', async (event, batchId, filePath) => {
+  try {
+    if (!/^\d+$/.test(String(batchId))) throw new Error('Bad batch id');
+    if (typeof filePath !== 'string' || !isAllowedPath(filePath)) throw new Error('Path not allowed');
+    return { success: true, ...(await songFixer.stripSites(String(batchId), filePath)) };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+// Find album art that is a website's picture (read from every song's file)
+ipcMain.handle('song-fixer-cover-scan', async (event, paths) => {
+  try {
+    if (!Array.isArray(paths)) throw new Error('Bad request');
+    const ok = paths.filter(p => typeof p === 'string' && isAllowedPath(p));
+    const groups = await songFixer.coverScan(ok, (done, total) => {
+      if (!event.sender.isDestroyed()) event.sender.send('song-fixer-cover-progress', { done, total });
+    });
+    return { success: true, groups };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('song-fixer-remove-cover', async (event, batchId, filePath, hash) => {
+  try {
+    if (!/^\d+$/.test(String(batchId))) throw new Error('Bad batch id');
+    if (typeof filePath !== 'string' || !isAllowedPath(filePath)) throw new Error('Path not allowed');
+    if (!/^[0-9a-f]{40}$/.test(String(hash))) throw new Error('Bad picture id');
+    return { success: true, ...(await songFixer.removeCover(String(batchId), filePath, hash)) };
   } catch (error) {
     return { success: false, error: error.message };
   }

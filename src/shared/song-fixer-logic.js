@@ -191,6 +191,8 @@ const FFMPEG_TAG_NAMES = {
   artist: 'artist',
   album: 'album',
   albumArtist: 'album_artist',
+  genre: 'genre',
+  comment: 'comment',
   year: 'date',
   trackNumber: 'track',
   discNumber: 'disc',
@@ -660,6 +662,8 @@ function cleanTagText(value) {
     .replace(/[([{][^)\]}]*[)\]}]\.(com|net|org|info|biz|ru|me|tv|fm)\b/gi, ' ')
     // brackets that only hold a site or junk: "[www.site.com]", "(Lyrics)"
     .replace(/[([{][^)\]}]*(https?:|www\.|\.(com|net|org|info|biz|ru|me|tv|fm)\b)[^)\]}]*[)\]}]/gi, ' ')
+    // "via DatPiff.com", "Download @ Hulkshare.com": the lead-in goes too
+    .replace(/(\b(?:free\s+)?(?:download(?:ed)?\s+(?:from|at|@|on)|visit|via|from|at|on)\s*|@\s*)(?=(https?:|www\.|[a-z0-9][a-z0-9-]*\.(com|net|org|info|biz|ru|co\.uk|me|tv|fm|us|cc)\b))/gi, ' ')
     .replace(SITE_RE, ' ')
     .replace(/_/g, ' ')
     .replace(JUNK_PHRASE_RE, ' ')
@@ -712,6 +716,82 @@ function proposeCleanTags(track, filePath, knownArtists = new Set()) {
   if (PLACEHOLDER_RE.test(album) || GUID_RE.test(album)) album = '';
   if (PLACEHOLDER_RE.test(artist)) artist = '';
   return { title: smartCase(title), artist: smartCase(artist), album };
+}
+
+// ---------------------------------------------------------------------------
+// Website names in tags ("DOPEHOOD.COM", "www.hear-it-first.net")
+// ---------------------------------------------------------------------------
+
+const SITE_FIELDS = ['title', 'artist', 'album', 'albumArtist', 'genre', 'comment'];
+
+/** Does this text contain a website? */
+function hasSite(v) {
+  return !!v && URL_RE.test(String(v));
+}
+
+/**
+ * New values for the fields of `tags` that contain a website, with the site
+ * (and nothing else worth keeping) removed. A title that was nothing but a
+ * site falls back to the file name; other fields are left empty. Fields
+ * without a site aren't included.
+ * @returns {object} e.g. { album: '', artist: 'Akon' }
+ */
+function stripSiteTags(tags, filePath = '') {
+  const out = {};
+  for (const f of SITE_FIELDS) {
+    const v = clean(tags[f]);
+    if (!hasSite(v)) continue;
+    // A comment is never shown on the Zune: just empty it
+    let nv = f === 'comment' ? '' : cleanTagText(v);
+    if (f === 'title' && !nv) {
+      nv = cleanTagText(fileStem(filePath)).replace(TRACK_NO_RE, '').trim();
+      // "Kevin Rudolf - All Mine" when the artist is already Kevin Rudolf
+      const artist = clean(tags.artist);
+      const parts = nv.split(/\s+[-–—]\s+/);
+      if (artist && parts.length >= 2 && norm(parts[0]) === norm(artist)) nv = parts.slice(1).join(' - ');
+    }
+    if (f === 'genre' && /^unknown$/i.test(nv)) nv = '';
+    if (hasSite(nv)) nv = ''; // couldn't be separated from the site
+    if (nv !== v) out[f] = nv;
+  }
+  return out;
+}
+
+/**
+ * Group songs by identical cover image and pick out the ones that look like a
+ * website's picture rather than an album cover:
+ * - "site": songs with this picture have (or had) a website in their tags or
+ *   file name — almost always the site's logo;
+ * - "spread": the same picture is on songs by 3+ artists and 3+ albums, which
+ *   real album covers aren't (compilations share one album name).
+ * @param entries [{ path, hash, title, artist, album, siteLinked }]
+ * @returns [{ hash, kind, paths, count, siteSongs, artists, albums, examples }]
+ *          most suspicious first
+ */
+function groupSiteCovers(entries) {
+  const byHash = new Map();
+  for (const e of entries) {
+    if (!e || !e.hash) continue;
+    if (!byHash.has(e.hash)) byHash.set(e.hash, []);
+    byHash.get(e.hash).push(e);
+  }
+  const groups = [];
+  for (const [hash, list] of byHash) {
+    const siteSongs = list.filter(e => e.siteLinked).length;
+    const artists = new Set(list.map(e => norm(cleanTagText(e.artist))).filter(Boolean)).size;
+    const albums = new Set(list.map(e => norm(cleanTagText(e.album))).filter(Boolean)).size;
+    const kind = siteSongs > 0 ? 'site' : (artists >= 3 && albums >= 3 ? 'spread' : null);
+    if (!kind) continue;
+    groups.push({
+      hash, kind,
+      paths: list.map(e => e.path),
+      count: list.length,
+      siteSongs, artists, albums,
+      examples: list.slice(0, 3).map(e => [cleanTagText(e.title) || fileStem(e.path), cleanTagText(e.artist)].filter(Boolean).join(' \u2014 ')),
+    });
+  }
+  const rank = (g) => (g.kind === 'site' ? 1e6 : 0) + g.siteSongs * 1000 + g.count;
+  return groups.sort((a, b) => rank(b) - rank(a));
 }
 
 /** A "cleanup" proposal (same shape as a lookup's) from current tags. */
@@ -828,6 +908,10 @@ const songFixerLogic = {
   buildTagArgs,
   joinArtists,
   WRITABLE_EXTENSIONS,
+  SITE_FIELDS,
+  hasSite,
+  stripSiteTags,
+  groupSiteCovers,
 };
 
 // What kind of audio a file holds, from its first bytes (Buffer or

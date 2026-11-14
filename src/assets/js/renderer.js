@@ -1650,7 +1650,8 @@ class ZuneSyncPanel {
 
             // 2. Send the fixed files
             const toSend = [...removedPaths, ...plan.resend];
-            const sent = toSend.length ? await window.electronAPI.zuneSendFiles(toSend) : { success: true, succeeded: [] };
+            // Fixed songs may have new (or removed website) album art: replace the album's picture too
+            const sent = toSend.length ? await window.electronAPI.zuneSendFiles(toSend, { replaceArt: true }) : { success: true, succeeded: [] };
             if (!sent.success) throw new Error(sent.error || 'sending failed');
             const succeeded = sent.succeeded || [];
             await window.electronAPI.songFixerZuneDone(succeeded);

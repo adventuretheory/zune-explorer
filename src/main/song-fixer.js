@@ -162,6 +162,8 @@ class SongFixer {
       artist: c.artist || '',
       album: c.album || '',
       albumArtist: c.albumartist || '',
+      genre: (c.genre && c.genre[0]) || '',
+      comment: (c.comment || []).map(x => (typeof x === 'string' ? x : x?.text || '')).filter(Boolean).join(' '),
       year: c.year || '',
       trackNumber: c.track?.no || '',
       discNumber: c.disk?.no || '',
@@ -424,6 +426,113 @@ class SongFixer {
     await this._record(batchId, { path: filePath, before, addedCover });
     await this._addPending(filePath, current);
     return { addedCover, transcoded: !!outcome.transcoded, coverSkipped: !!outcome.coverSkipped, renamedTo };
+  }
+
+  /**
+   * Take website names out of a song's tags (title, artist, album, album
+   * artist, genre, comment). Reads the file itself, so tags the library
+   * doesn't show are covered too.
+   * @returns {{ changed: object, renamedTo?: string }} changed = new values ({} if clean)
+   */
+  async stripSites(batchId, filePath) {
+    const current = await this.readTags(filePath);
+    const changed = logic.stripSiteTags(current, filePath);
+    if (!Object.keys(changed).length) return { changed };
+    const res = await this.apply(batchId, filePath, changed, { addCover: false });
+    return { changed, renamedTo: res.renamedTo };
+  }
+
+  // ---- Website pictures used as album art -----------------------------------
+
+  /**
+   * Read every song's cover and find pictures that are a website's logo or
+   * advert (see logic.groupSiteCovers). Results per file are cached until the
+   * file changes. `onProgress(done, total)` is called as files are read.
+   * @returns [{ hash, kind, paths, count, siteSongs, artists, albums, examples, image }]
+   *          image = data URL of the picture
+   */
+  async coverScan(paths, onProgress = () => {}) {
+    const { parseFile } = await import('music-metadata');
+    const crypto = require('crypto');
+    if (!this._coverCache) this._coverCache = new Map();
+    const images = new Map(); // hash -> data URL (one sample)
+    // Songs that had a website in their tags before being fixed still count
+    const pendingSite = new Set();
+    for (const e of await this._readPending()) {
+      if (Object.values(e.before || {}).some(logic.hasSite)) pendingSite.add(e.path);
+    }
+    const entries = [];
+    for (let i = 0; i < paths.length; i++) {
+      const p = paths[i];
+      if (i % 25 === 0) onProgress(i, paths.length);
+      let st;
+      try { st = await fs.stat(p); } catch { continue; }
+      const stamp = `${st.size}:${st.mtimeMs}`;
+      let info = this._coverCache.get(p);
+      if (!info || info.stamp !== stamp) {
+        info = { stamp, hash: null };
+        try {
+          const md = await parseFile(p, { duration: false, skipCovers: false });
+          const c = md.common;
+          const pic = c.picture && c.picture[0];
+          const comment = (c.comment || []).map(x => (typeof x === 'string' ? x : x?.text || '')).join(' ');
+          info.title = c.title || '';
+          info.artist = c.artist || '';
+          info.album = c.album || '';
+          info.siteInTags = [c.title, c.artist, c.album, c.albumartist, comment, c.genre && c.genre[0]].some(logic.hasSite);
+          if (pic && pic.data && pic.data.length) {
+            info.hash = crypto.createHash('sha1').update(pic.data).digest('hex');
+            if (!images.has(info.hash)) images.set(info.hash, `data:${pic.format || 'image/jpeg'};base64,${Buffer.from(pic.data).toString('base64')}`);
+          }
+        } catch { /* unreadable: no cover */ }
+        this._coverCache.set(p, info);
+      }
+      if (!info.hash) continue;
+      entries.push({
+        path: p, hash: info.hash, title: info.title, artist: info.artist, album: info.album,
+        siteLinked: info.siteInTags || pendingSite.has(p) || logic.hasSite(path.basename(p, path.extname(p))),
+      });
+    }
+    onProgress(paths.length, paths.length);
+    const groups = logic.groupSiteCovers(entries);
+    // Pictures read in an earlier scan (cached) need loading again for display
+    for (const g of groups) {
+      if (!images.has(g.hash)) {
+        for (const p of g.paths) {
+          try {
+            const md = await parseFile(p, { duration: false, skipCovers: false });
+            const pic = md.common.picture && md.common.picture[0];
+            if (pic) { images.set(g.hash, `data:${pic.format || 'image/jpeg'};base64,${Buffer.from(pic.data).toString('base64')}`); break; }
+          } catch { /* try the next */ }
+        }
+      }
+      g.image = images.get(g.hash) || null;
+    }
+    return groups;
+  }
+
+  /**
+   * Remove a song's cover picture if it is the one with this hash. The
+   * picture is kept in the undo folder so "undo" can put it back.
+   * @returns {{ removed: boolean, skipped?: string }}
+   */
+  async removeCover(batchId, filePath, hash) {
+    const { parseFile } = await import('music-metadata');
+    const crypto = require('crypto');
+    const md = await parseFile(filePath, { duration: false, skipCovers: false });
+    const pic = md.common.picture && md.common.picture[0];
+    if (!pic) return { removed: false, skipped: 'no album art' };
+    const h = crypto.createHash('sha1').update(pic.data).digest('hex');
+    if (h !== hash) return { removed: false, skipped: 'album art has changed since the scan' };
+    const coverDir = path.join(this.undoDir, 'covers');
+    await fs.mkdir(coverDir, { recursive: true });
+    const saved = path.join(coverDir, hash + (/png/i.test(pic.format || '') ? '.png' : '.jpg'));
+    if (!fsSync.existsSync(saved)) await fs.writeFile(saved, pic.data);
+    const current = await this.readTags(filePath);
+    await this._rewrite(filePath, {}, { dropCover: true });
+    await this._record(batchId, { path: filePath, before: {}, restoreCover: saved });
+    await this._addPending(filePath, current, { artChanged: true });
+    return { removed: true };
   }
 
   // ---- Songs fixed here but not yet updated on the Zune ---------------------
@@ -697,7 +806,8 @@ class SongFixer {
     for (const e of entries.reverse()) {
       try {
         if (!fsSync.existsSync(e.path)) throw new Error('file no longer exists');
-        await this._rewrite(e.path, e.before, { dropCover: e.addedCover });
+        if (e.restoreCover && !fsSync.existsSync(e.restoreCover)) throw new Error('the removed picture is no longer saved');
+        await this._rewrite(e.path, e.before, { dropCover: e.addedCover, coverPath: e.restoreCover || null });
         restored.push(e.path);
       } catch (err) {
         failed.push({ path: e.path, error: err.message });

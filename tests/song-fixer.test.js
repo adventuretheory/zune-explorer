@@ -344,3 +344,48 @@ test('a song saved as ".net" gets its real ending, and VBR files without a lengt
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('websites come out of tags, and a website picture is removed and restored by undo', { skip: !haveFfmpeg && 'ffmpeg binary not installed' }, async () => {
+  const { SongFixer } = require('../src/main/song-fixer.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'songfixer-'));
+  try {
+    const logo = path.join(dir, 'logo.jpg');
+    execFileSync(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=c=red:s=300x300:d=1', '-frames:v', '1', '-y', logo]);
+    const make = (name, tags) => {
+      const f = path.join(dir, name);
+      execFileSync(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'sine=f=330:d=3', '-i', logo,
+        '-map', '0:a', '-map', '1:0', '-c:a', 'libmp3lame', '-c:v', 'copy', '-disposition:v:0', 'attached_pic', '-id3v2_version', '3',
+        ...Object.entries(tags).flatMap(([k, v]) => ['-metadata', `${k}=${v}`]), '-y', f]);
+      return f;
+    };
+    const a = make('a.mp3', { title: 'All Mine', artist: 'Kevin Rudolf', album: 'DOPEHOOD.COM' });
+    const b = make('b.mp3', { title: 'Beautiful', artist: 'Akon', album: 'Freedom' });
+    const sf = new SongFixer({ ffmpegPath, dataDir: dir });
+
+    const res = await sf.stripSites('300', a);
+    assert.deepEqual(res.changed, { album: '' });
+    let tags = await sf.readTags(a);
+    assert.equal(tags.album, '');
+    assert.equal(tags.title, 'All Mine');
+    assert.deepEqual((await sf.stripSites('300', b)).changed, {});
+
+    // Same picture on both; one of them had a website: the picture is listed
+    const groups = await sf.coverScan([a, b]);
+    assert.equal(groups.length, 1);
+    assert.equal(groups[0].kind, 'site');
+    assert.equal(groups[0].count, 2);
+    assert.match(groups[0].image, /^data:image\//);
+
+    for (const p of groups[0].paths) assert.equal((await sf.removeCover('301', p, groups[0].hash)).removed, true);
+    assert.equal((await sf.readTags(a)).hasCover, false);
+    assert.equal((await sf.readTags(b)).hasCover, false);
+    assert.equal((await sf.readTags(b)).title, 'Beautiful');
+
+    const undo = await sf.undoLast();
+    assert.equal(undo.failed.length, 0);
+    assert.equal((await sf.readTags(a)).hasCover, true);
+    assert.equal((await sf.readTags(b)).hasCover, true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

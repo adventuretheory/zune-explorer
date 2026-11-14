@@ -453,3 +453,25 @@ test('meaningfulChanges ignores how a name is written, catches wrong ones', () =
   assert.deepEqual(mc({ title: 'Track 7', artist: 'Tool', album: 'Ænima' },
                       { title: 'Forty Six & 2', artist: 'Tool', album: 'Ænima' }), ['title']);
 });
+
+test('stripSiteTags takes websites out of names and keeps the rest', () => {
+  const out = L.stripSiteTags({
+    title: 'www.dopehood.com', artist: 'Kevin Rudolf', album: 'DOPEHOOD.COM', albumArtist: 'Kevin Rudolf',
+    genre: 'Hip Hop', comment: 'Downloaded from dopehood.com',
+  }, '/m/Kevin Rudolf - All Mine [dopehood.com].mp3');
+  assert.deepEqual(out, { title: 'All Mine', album: '', comment: '' });
+  assert.deepEqual(L.stripSiteTags({ title: 'Beautiful', artist: 'Akon', album: 'www.hear-it-first.net' }), { album: '' });
+  assert.deepEqual(L.stripSiteTags({ title: 'Song (via DatPiff.com)', artist: 'Free Download @ Hulkshare.com' }), { title: 'Song', artist: '' });
+  assert.deepEqual(L.stripSiteTags({ title: 'Clean', artist: 'Will.i.am', album: 'Songs About Girls' }), {});
+});
+
+test('groupSiteCovers flags pictures tied to websites or spread over many albums', () => {
+  const e = (path, hash, artist, album, siteLinked = false) => ({ path, hash, title: path, artist, album, siteLinked });
+  const groups = L.groupSiteCovers([
+    e('a', 'logo', 'Akon', 'DOPEHOOD.COM', true), e('b', 'logo', 'Akon', 'Freedom'),
+    e('c', 'promo', 'X', 'One'), e('d', 'promo', 'Y', 'Two'), e('f', 'promo', 'Z', 'Three'),
+    e('g', 'real', 'Disturbed', 'Ten Thousand Fists'), e('h', 'real', 'Disturbed', 'Ten Thousand Fists'),
+    e('i', 'comp', 'P', 'Now 20'), e('j', 'comp', 'Q', 'Now 20'), e('k', 'comp', 'R', 'Now 20'),
+  ]);
+  assert.deepEqual(groups.map(g => [g.hash, g.kind, g.count]), [['logo', 'site', 2], ['promo', 'spread', 3]]);
+});

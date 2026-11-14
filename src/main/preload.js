@@ -27,7 +27,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Zune sync
   zuneGetStatus: () => ipcRenderer.invoke('zune-get-status'),
   zuneDeviceInfo: () => ipcRenderer.invoke('zune-device-info'),
-  zuneSendFiles: (paths) => ipcRenderer.invoke('zune-send-files', paths),
+  zuneSendFiles: (paths, opts) => ipcRenderer.invoke('zune-send-files', paths, opts),
   zuneCancelTransfer: () => ipcRenderer.invoke('zune-cancel-transfer'),
   zuneSendPodcastEpisodes: (refs) => ipcRenderer.invoke('zune-send-podcast-episodes', refs),
   zuneSetPodcastBookmarks: (writes) => ipcRenderer.invoke('zune-set-podcast-bookmarks', writes),
@@ -219,6 +219,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   songFixerConfirmedAdd: (paths) => ipcRenderer.invoke('song-fixer-confirmed-add', paths),
   songFixerTrash: (paths, opts) => ipcRenderer.invoke('song-fixer-trash', paths, opts),
   songFixerAddArt: (batchId, filePath, info, opts) => ipcRenderer.invoke('song-fixer-add-art', batchId, filePath, info, opts),
+  songFixerStripSites: (batchId, filePath) => ipcRenderer.invoke('song-fixer-strip-sites', batchId, filePath),
+  songFixerCoverScan: (paths) => ipcRenderer.invoke('song-fixer-cover-scan', paths),
+  songFixerRemoveCover: (batchId, filePath, hash) => ipcRenderer.invoke('song-fixer-remove-cover', batchId, filePath, hash),
+  onSongFixerCoverProgress: (cb) => {
+    const handler = (e, data) => cb(data);
+    ipcRenderer.on('song-fixer-cover-progress', handler);
+    return handler;
+  },
+  offSongFixerCoverProgress: (handler) => ipcRenderer.removeListener('song-fixer-cover-progress', handler),
   pickImage: () => ipcRenderer.invoke('pick-image'),
   songFixerZuneRemoved: (paths) => ipcRenderer.invoke('song-fixer-zune-removed', paths),
   songFixerZuneDone: (paths) => ipcRenderer.invoke('song-fixer-zune-done', paths),
