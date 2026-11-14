@@ -789,7 +789,13 @@ function groupSiteCovers(entries) {
     const siteSongs = list.filter(e => e.siteLinked).length;
     // Main artist only: "SE7EN feat. T.O.P" and "SE7EN" are one artist
     const mainArtist = (a) => norm(cleanTagText(a).split(/\s+(?:feat\.?|ft\.?|featuring|with|x|vs\.?)\s+|\s*[,&\/]\s*/i)[0]);
-    const artists = new Set(list.map(e => mainArtist(e.artist)).filter(Boolean)).size;
+    // "The Pussycat Dolls" / "Pussycat Dolls", "Linkin Park" / "Linkin Park
+    // reinterpreted": one artist written two ways counts once
+    const names = [...new Set(list.map(e => mainArtist(e.artist).replace(/^the\s+/, '')).filter(Boolean))]
+      .sort((x, y) => x.length - y.length);
+    const distinct = [];
+    for (const n of names) if (!distinct.some(d => n === d || n.startsWith(d + ' '))) distinct.push(n);
+    const artists = distinct.length;
     const albums = new Set(list.map(e => norm(cleanTagText(e.album))).filter(Boolean)).size;
     // A real album cover belongs to one artist. Songs downloaded from a site
     // can carry the site's name AND the real cover, so a website in the

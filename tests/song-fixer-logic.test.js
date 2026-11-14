@@ -483,6 +483,11 @@ test('groupSiteCovers flags pictures tied to websites or spread over many albums
   // Guests don't make a second artist
   const g3 = L.groupSiteCovers([e('a', 'se7en', 'SE7EN', 'Digital Bounce', true), e('b', 'se7en', 'SE7EN feat. T.O.P', 'Digital Bounce', true)]);
   assert.equal(g3[0].kind, 'single');
+  // One artist written two ways
+  const g4 = L.groupSiteCovers([e('a', 'pcd', 'The Pussycat Dolls', 'Doll Domination', true), e('b', 'pcd', 'Pussycat Dolls', 'Doll Domination', true)]);
+  assert.equal(g4[0].kind, 'single');
+  const g5 = L.groupSiteCovers([e('a', 'lp', 'Linkin Park', 'Meteora', true), e('b', 'lp', 'Linkin Park reinterpreted', 'Reanimation', true)]);
+  assert.equal(g5[0].kind, 'single');
 });
 
 test('qualityGrade: measured sound beats the bitrate; 128 kbps alone is okay, not poor', () => {
