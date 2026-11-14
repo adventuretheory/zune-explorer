@@ -473,3 +473,22 @@ test('the album art check stops when asked and reports how far it got', async ()
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('ignored songs are remembered until their file changes, and can be un-ignored', async () => {
+  const { SongFixer } = require('../src/main/song-fixer.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'songfixer-'));
+  try {
+    const a = path.join(dir, 'a.mp3'), b = path.join(dir, 'b.mp3');
+    fs.writeFileSync(a, 'one'); fs.writeFileSync(b, 'two');
+    const sf = new SongFixer({ ffmpegPath: 'unused', dataDir: dir });
+    await sf.ignoredSet([a, b], true);
+    assert.deepEqual((await sf.ignoredGet()).sort(), [a, b].sort());
+    fs.writeFileSync(b, 'changed'); // a changed file is checked again
+    const later = new Date(Date.now() + 5000); fs.utimesSync(b, later, later);
+    assert.deepEqual(await sf.ignoredGet(), [a]);
+    await sf.ignoredSet([a], false);
+    assert.deepEqual(await sf.ignoredGet(), []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

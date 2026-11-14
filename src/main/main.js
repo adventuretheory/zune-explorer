@@ -1522,6 +1522,10 @@ ipcMain.handle('song-fixer-apply', async (event, batchId, filePath, tags, opts) 
 
 ipcMain.handle('song-fixer-undo-info', async () => songFixer.undoInfo());
 ipcMain.handle('song-fixer-zune-pending', async () => songFixer.zunePending());
+ipcMain.handle('song-fixer-ignored-get', async () => songFixer.ignoredGet());
+ipcMain.handle('song-fixer-ignored-set', async (event, paths, ignore) => {
+  if (Array.isArray(paths)) await songFixer.ignoredSet(paths.filter(p => typeof p === 'string' && isAllowedPath(p)), !!ignore);
+});
 ipcMain.handle('song-fixer-confirmed-get', async () => songFixer.confirmedGet());
 ipcMain.handle('song-fixer-confirmed-add', async (event, paths) => {
   if (Array.isArray(paths)) await songFixer.confirmedAdd(paths.filter(p => typeof p === 'string' && isAllowedPath(p)));

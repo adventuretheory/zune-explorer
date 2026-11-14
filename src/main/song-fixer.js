@@ -966,6 +966,31 @@ class SongFixer {
     await fs.writeFile(this._confirmedFile(), JSON.stringify(saved));
   }
 
+  // ---- Songs ignored on the "needs fixing" list ------------------------------
+
+  _ignoredFile() { return path.join(this.undoDir, 'ignored.json'); }
+
+  /** Paths ignored earlier whose files haven't changed since (a changed file is checked again). */
+  async ignoredGet() {
+    let saved = {};
+    try { saved = JSON.parse(await fs.readFile(this._ignoredFile(), 'utf8')); } catch { /* none yet */ }
+    const out = [];
+    for (const [p, sig] of Object.entries(saved)) if (sig && sig === await this._fileSig(p)) out.push(p);
+    return out;
+  }
+
+  async ignoredSet(paths, ignore) {
+    let saved = {};
+    try { saved = JSON.parse(await fs.readFile(this._ignoredFile(), 'utf8')); } catch { /* none yet */ }
+    for (const p of paths) {
+      if (!ignore) { delete saved[p]; continue; }
+      const sig = await this._fileSig(p);
+      if (sig) saved[p] = sig;
+    }
+    await fs.mkdir(this.undoDir, { recursive: true });
+    await fs.writeFile(this._ignoredFile(), JSON.stringify(saved));
+  }
+
   async _readSynced() {
     try { return JSON.parse(await fs.readFile(path.join(this.undoDir, 'zune-synced.json'), 'utf8')); } catch { return {}; }
   }

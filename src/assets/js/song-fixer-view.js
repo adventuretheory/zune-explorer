@@ -37,6 +37,7 @@ class SongFixerView {
       };
       // Confirmed correct by sound earlier (and the file hasn't changed since)
       if (item.state === 'idle' && this.confirmed?.has(path)) item.state = 'confirmed';
+      item.ignored = !!this.ignored?.has(path);
       items.push(item);
     }
     items.sort((a, b) => (a.track.title || '').localeCompare(b.track.title || ''));
@@ -50,12 +51,17 @@ class SongFixerView {
     return zm.onZune.has(path) ? 'zune' : 'computer';
   }
 
+  /** On the "needs fixing" list: something's wrong, not fixed, checked or ignored. */
+  _needsFixing(i) {
+    return !i.ignored && i.state !== 'applied' && i.state !== 'confirmed' && (i.reasons.length > 0 || i.state !== 'idle');
+  }
+
   _visible() {
     const q = this.filter.trim().toLowerCase();
     const list = this.items.filter(i =>
       // Fixed songs leave "needs fixing" (they're still under "all songs"),
       // so select all / delete only cover what's left
-      (this.mode === 'all' || (i.state !== 'applied' && i.state !== 'confirmed' && (i.reasons.length > 0 || i.state !== 'idle'))) &&
+      (this.mode === 'all' || this._needsFixing(i)) &&
       (!q || [i.track.title, i.track.artist, i.track.album, i.path].some(v => String(v || '').toLowerCase().includes(q))));
     if (!this._sizes || this._sizes.size !== (this.explorer.categorizedFiles?.music || []).length) {
       this._sizes = new Map((this.explorer.categorizedFiles?.music || []).map(f => [f.path, f.size || 0]));
@@ -105,6 +111,9 @@ class SongFixerView {
     if (!this.confirmed) {
       try { this.confirmed = new Set(await window.electronAPI.songFixerConfirmedGet()); } catch { this.confirmed = new Set(); }
     }
+    if (!this.ignored) {
+      try { this.ignored = new Set(await window.electronAPI.songFixerIgnoredGet()); } catch { this.ignored = new Set(); }
+    }
     if (!this.running) this._loadItems();
     try { this.undoInfo = await window.electronAPI.songFixerUndoInfo(); } catch { this.undoInfo = null; }
     // Which of these songs are also on the Zune (connected, or as of its last scan)
@@ -139,7 +148,8 @@ class SongFixerView {
       return;
     }
 
-    const suspects = this.items.filter(i => i.reasons.length > 0 && i.state !== 'applied').length;
+    // Same songs as the "needs fixing" list shows
+    const suspects = this.items.filter(i => this._needsFixing(i)).length;
     const summary = this._el('div', 'zune-diff-summary song-fixer-summary');
     summary.appendChild(this._el('span', 'zune-diff-stat zune-diff-stat-push', `${suspects} songs need fixing`));
     summary.appendChild(this._el('span', 'zune-diff-stat', `${this.items.length} songs in library`));
@@ -309,6 +319,22 @@ class SongFixerView {
       () => this._deleteLocal(toDelete.map(i => i.path), { removeFromZune: true }));
     bar.appendChild(del);
 
+    // Leave songs off the list for good (until the file changes); "all songs" can bring them back
+    const toIgnore = selected.filter(i => i.state !== 'working' && !i.ignored);
+    const toUnignore = selected.filter(i => i.ignored);
+    if (toUnignore.length && this.mode === 'all') {
+      const un = this._el('button', 'zune-sync-btn', `un-ignore ${toUnignore.length}`);
+      un.title = 'put these back on the needs fixing list';
+      un.addEventListener('click', () => this._setIgnored(toUnignore, false));
+      bar.appendChild(un);
+    } else {
+      const ign = this._el('button', 'zune-sync-btn', `ignore ${toIgnore.length}`);
+      ign.disabled = toIgnore.length === 0;
+      ign.title = 'stop listing these here (they stay in your library; \u201call songs\u201d still shows them and can un-ignore)';
+      ign.addEventListener('click', () => this._setIgnored(toIgnore, true));
+      bar.appendChild(ign);
+    }
+
     if (this.undoInfo?.count) {
       const undo = this._el('button', 'zune-sync-btn', `undo last fix (${this.undoInfo.count} song${this.undoInfo.count === 1 ? '' : 's'})`);
       undo.addEventListener('click', () => this._undo());
@@ -366,6 +392,7 @@ class SongFixerView {
       ['tags look wrong', visible.filter(i => i.state === 'found')],
       ['not checked yet', visible.filter(i => i.state === 'idle')],
       ['confirmed', visible.filter(i => i.state === 'confirmed')],
+      ['ignored', visible.filter(i => i.ignored)],
       ['no album art', visible.filter(i => !(i.track.albumArtKey || i.track.albumArt))],
       ['on zune too', visible.filter(i => this._whereOf(i.path) === 'zune')],
       ['computer only', visible.filter(i => this._whereOf(i.path) === 'computer')],
@@ -416,6 +443,7 @@ class SongFixerView {
     info.appendChild(this._el('div', 'zune-diff-title', t.title || item.path.split(/[/\\]/).pop()));
     const meta = `${t.artist || '?'} — ${t.album || '?'}` + (item.reasons.length ? `  ·  ${item.reasons.join(', ')}` : '');
     const metaEl = this._el('div', 'zune-diff-meta', meta);
+    if (item.ignored) metaEl.appendChild(this._el('span', 'song-fixer-where where-computer', 'ignored'));
     // Every song here is a file on this computer; say whether the Zune has it too
     const where = this._whereOf(item.path);
     if (where) {
@@ -1431,6 +1459,20 @@ class SongFixerView {
     try { this.undoInfo = await window.electronAPI.songFixerUndoInfo(); } catch {}
     this._refreshActions();
     if (fixedPaths.length) await this._reloadTracks(fixedPaths);
+  }
+
+  async _setIgnored(items, ignore) {
+    const paths = items.map(i => i.path);
+    await window.electronAPI.songFixerIgnoredSet(paths, ignore);
+    for (const i of items) {
+      i.ignored = ignore;
+      i.selected = false;
+      if (ignore) this.ignored.add(i.path); else this.ignored.delete(i.path);
+    }
+    this._setStatus(ignore
+      ? `${items.length} song${items.length === 1 ? '' : 's'} ignored \u2014 they won\u2019t be listed here again unless the file changes (\u201call songs\u201d \u2192 select only: ignored, to bring them back).`
+      : `${items.length} song${items.length === 1 ? '' : 's'} back on the needs fixing list.`);
+    this._draw();
   }
 
   async _undo() {
