@@ -719,7 +719,9 @@ class SongFixerView {
         'the website is taken out and the rest kept; an album that was only a website is left empty. ' +
         'hidden comments with websites are emptied too. untick any you want left alone.'));
       const bar = this._el('div', 'zune-diff-actions song-fixer-actions');
-      if (this.running) {
+      if (this.running && this.coverScanning) {
+        // the album art check is running; its stop button is in that section
+      } else if (this.running) {
         const stop = this._el('button', 'zune-sync-btn zune-pull-btn', 'stop');
         stop.addEventListener('click', () => { this.stopRequested = true; stop.disabled = true; stop.textContent = 'stopping after the current song…'; });
         bar.appendChild(stop);
@@ -787,7 +789,16 @@ class SongFixerView {
       'or when the same picture is on lots of different artists and albums — real covers aren’t. look at each one: ticked pictures are removed from their songs ' +
       '(undo puts them back), then the real album art can be looked up.'));
     const artBar = this._el('div', 'zune-diff-actions');
-    if (!this.running) {
+    if (this.coverScanning) {
+      const stop = this._el('button', 'zune-sync-btn zune-pull-btn', 'stop checking');
+      stop.title = 'stops reading album art; pictures found so far are still shown';
+      stop.addEventListener('click', () => {
+        stop.disabled = true;
+        stop.textContent = 'stopping\u2026';
+        window.electronAPI.songFixerCoverScanStop?.();
+      });
+      artBar.appendChild(stop);
+    } else if (!this.running) {
       const scan = this._el('button', 'zune-sync-btn zune-push-btn', this.coverGroups ? 'check album art again' : 'check album art');
       scan.addEventListener('click', () => this._scanCovers());
       artBar.appendChild(scan);
@@ -1002,6 +1013,7 @@ class SongFixerView {
 
   async _scanCovers() {
     this.running = true;
+    this.coverScanning = true;
     this._draw();
     const paths = [...this.explorer.musicLibrary.tracks.keys()];
     this._setStatus(`reading album art: 0 of ${paths.length}…`);
@@ -1009,6 +1021,7 @@ class SongFixerView {
     let res;
     try { res = await window.electronAPI.songFixerCoverScan(paths); } finally { if (h) window.electronAPI.offSongFixerCoverProgress(h); }
     this.running = false;
+    this.coverScanning = false;
     if (!res?.success) {
       this._setStatus('couldn’t read album art: ' + (res?.error || 'unknown error'));
     } else {
@@ -1022,9 +1035,10 @@ class SongFixerView {
       if (site) parts.push(`${site} likely website logo${site === 1 ? '' : 's'} (on several artists, ticked)`);
       if (spread) parts.push(`${spread} shared by many albums (not ticked)`);
       if (single) parts.push(`${single} probably real album cover${single === 1 ? '' : 's'} from downloaded albums (not ticked)`);
-      this._setStatus(res.groups.length
+      const partial = res.stopped ? ` (stopped after ${res.read} of ${res.total} songs \u2014 press \u201ccheck album art again\u201d to read them all)` : '';
+      this._setStatus((res.groups.length
         ? `${res.groups.length} picture${res.groups.length === 1 ? '' : 's'} to look at: ${parts.join(', ')}. look at each one before removing.`
-        : '');
+        : (res.stopped ? 'stopped.' : '')) + partial);
     }
     this._draw();
   }

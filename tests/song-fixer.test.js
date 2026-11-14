@@ -456,3 +456,20 @@ test('quality scan measures and remembers how much of the sound a file has', { s
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('the album art check stops when asked and reports how far it got', async () => {
+  const { SongFixer } = require('../src/main/song-fixer.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'songfixer-'));
+  try {
+    const sf = new SongFixer({ ffmpegPath: 'unused', dataDir: dir });
+    let asked = 0;
+    const progress = [];
+    const groups = await sf.coverScan(['/nope/a.mp3', '/nope/b.mp3', '/nope/c.mp3', '/nope/d.mp3'],
+      (done) => progress.push(done), () => ++asked > 2);
+    assert.deepEqual(groups, []);
+    assert.equal(asked, 3, 'checked before each song and stopped');
+    assert.equal(progress.at(-1), 2, 'reports the songs actually read');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -634,7 +634,7 @@ class SongFixer {
    * @returns [{ hash, kind, paths, count, siteSongs, artists, albums, examples, image }]
    *          image = data URL of the picture
    */
-  async coverScan(paths, onProgress = () => {}) {
+  async coverScan(paths, onProgress = () => {}, shouldStop = () => false) {
     const { parseFile } = await import('music-metadata');
     const crypto = require('crypto');
     if (!this._coverCache) this._coverCache = new Map();
@@ -645,7 +645,10 @@ class SongFixer {
       if (Object.values(e.before || {}).some(logic.hasSite)) pendingSite.add(e.path);
     }
     const entries = [];
+    let read = 0;
     for (let i = 0; i < paths.length; i++) {
+      if (shouldStop()) break; // what's been read so far is still grouped and shown
+      read = i + 1;
       const p = paths[i];
       if (i % 25 === 0) onProgress(i, paths.length);
       let st;
@@ -655,7 +658,11 @@ class SongFixer {
       if (!info || info.stamp !== stamp) {
         info = { stamp, hash: null };
         try {
-          const md = await parseFile(p, { duration: false, skipCovers: false });
+          let timer;
+          const md = await Promise.race([
+            parseFile(p, { duration: false, skipCovers: false }),
+            new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timed out')), 15000); }),
+          ]).finally(() => clearTimeout(timer));
           const c = md.common;
           const pic = c.picture && c.picture[0];
           const comment = (c.comment || []).map(x => (typeof x === 'string' ? x : x?.text || '')).join(' ');
@@ -676,7 +683,7 @@ class SongFixer {
         siteLinked: info.siteInTags || pendingSite.has(p) || logic.hasSite(path.basename(p, path.extname(p))),
       });
     }
-    onProgress(paths.length, paths.length);
+    onProgress(read, paths.length);
     const groups = logic.groupSiteCovers(entries);
     // Pictures read in an earlier scan (cached) need loading again for display
     for (const g of groups) {

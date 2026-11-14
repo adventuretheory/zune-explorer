@@ -1575,14 +1575,19 @@ ipcMain.handle('song-fixer-strip-sites', async (event, batchId, filePath) => {
 });
 
 // Find album art that is a website's picture (read from every song's file)
+let coverScanStop = false;
+ipcMain.handle('song-fixer-cover-scan-stop', async () => { coverScanStop = true; });
 ipcMain.handle('song-fixer-cover-scan', async (event, paths) => {
   try {
     if (!Array.isArray(paths)) throw new Error('Bad request');
     const ok = paths.filter(p => typeof p === 'string' && isAllowedPath(p));
+    coverScanStop = false;
+    let read = 0;
     const groups = await songFixer.coverScan(ok, (done, total) => {
+      read = done;
       if (!event.sender.isDestroyed()) event.sender.send('song-fixer-cover-progress', { done, total });
-    });
-    return { success: true, groups };
+    }, () => coverScanStop);
+    return { success: true, groups, stopped: coverScanStop, read, total: ok.length };
   } catch (error) {
     return { success: false, error: error.message };
   }

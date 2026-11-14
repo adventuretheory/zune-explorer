@@ -250,6 +250,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   offQualityProgress: (h) => ipcRenderer.removeListener('quality-progress', h),
   songFixerStripSites: (batchId, filePath) => ipcRenderer.invoke('song-fixer-strip-sites', batchId, filePath),
   songFixerCoverScan: (paths) => ipcRenderer.invoke('song-fixer-cover-scan', paths),
+  songFixerCoverScanStop: () => ipcRenderer.invoke('song-fixer-cover-scan-stop'),
   songFixerRemoveCover: (batchId, filePath, hash) => ipcRenderer.invoke('song-fixer-remove-cover', batchId, filePath, hash),
   onSongFixerCoverProgress: (cb) => {
     const handler = (e, data) => cb(data);
