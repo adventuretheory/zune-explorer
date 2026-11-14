@@ -34,3 +34,35 @@ test('sending is refused while a copy is in flight, and allowed after', { skip: 
   assert.deepEqual(await pull, Buffer.from('data'));
   assert.equal(zm._pullsInFlight, 0);
 });
+
+test('retagTracks sets names, renames a fully cleaned album and drops songs from an emptied one', { skip: !ZuneManager && 'usb module not built' }, async () => {
+  const zm = connectedManager();
+  const props = new Map();
+  const albums = new Map([[900, { name: 'DOPEHOOD.COM', refs: [1, 2] }], [901, { name: 'Hits [MP3JUICES.COM]', refs: [3] }], [902, { name: 'Freedom', refs: [4] }]]);
+  const deleted = [];
+  let synced = 0;
+  zm.mtp = {
+    setObjectPropString: async (h, p, v) => {
+      if (albums.has(h)) albums.get(h).name = v; else props.set(`${h}:${p}`, v);
+    },
+    getObjectPropString: async (h, p) => (albums.has(h) ? albums.get(h).name : (props.get(`${h}:${p}`) ?? '')),
+    getObjectHandles: async (storage, format) => (format === 47619 ? [...albums.keys()] : []),
+    getObjectReferences: async (h) => albums.get(h).refs,
+    setObjectReferences: async (h, refs) => { albums.get(h).refs = refs; },
+    deleteObject: async (h) => { deleted.push(h); albums.delete(h); },
+    syncDeviceDB: async () => { synced++; },
+  };
+  const r = await zm.retagTracks([
+    { handle: 1, changes: { album: '' }, old: { album: 'DOPEHOOD.COM', artist: 'Kevin Rudolf' } },
+    { handle: 2, changes: { title: 'All Mine', album: '' }, old: { album: 'DOPEHOOD.COM', artist: 'Kevin Rudolf' } },
+    { handle: 3, changes: { album: 'Hits' }, old: { album: 'Hits [MP3JUICES.COM]', artist: 'X' } },
+  ]);
+  assert.deepEqual(r, { done: [1, 2, 3], errors: [] });
+  assert.equal(props.get('2:56388'), 'All Mine'); // Name 0xDC44
+  assert.equal(props.get('1:56474'), '');          // AlbumName 0xDC9A
+  assert.deepEqual(deleted, [900]);
+  assert.equal(albums.get(901).name, 'Hits');
+  assert.equal(albums.get(902).name, 'Freedom');
+  assert.equal(synced, 1);
+  assert.equal(zm.transferring, false);
+});

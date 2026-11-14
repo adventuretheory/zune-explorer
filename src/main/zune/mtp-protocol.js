@@ -642,6 +642,9 @@ class MtpProtocol {
   }
 
   _encodeMtpString(str) {
+    // An empty MTP string is a single zero length byte
+    if (!str) return Buffer.from([0]);
+    str = String(str).slice(0, 254);
     const withNull = str + '\0';
     const charCount = withNull.length;
     const buf = Buffer.alloc(1 + charCount * 2);

@@ -489,6 +489,23 @@ ipcMain.handle('zune-browse-contents', async () => {
   }
 });
 
+// Change song details directly on the Zune (e.g. remove website names)
+ipcMain.handle('zune-retag', async (event, edits) => {
+  try {
+    if (!Array.isArray(edits)) throw new Error('Bad request');
+    const FIELDS = ['title', 'artist', 'album', 'albumArtist', 'genre'];
+    const str = (v) => (v == null ? '' : String(v).slice(0, 254));
+    const clean = edits.filter(e => e && Number.isInteger(e.handle) && e.changes && typeof e.changes === 'object').map(e => {
+      const changes = {};
+      for (const f of FIELDS) if (f in e.changes) changes[f] = str(e.changes[f]);
+      return { handle: e.handle, changes, old: { artist: str(e.old?.artist), album: str(e.old?.album) } };
+    });
+    return { success: true, ...(await zuneManager.retagTracks(clean)) };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
 ipcMain.handle('zune-delete-objects', async (event, handles) => {
   try {
     const result = await zuneManager.deleteObjects(handles);

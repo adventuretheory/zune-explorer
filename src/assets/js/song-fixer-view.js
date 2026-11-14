@@ -679,8 +679,6 @@ class SongFixerView {
     if (!this.siteSkip) this.siteSkip = new Set();     // paths unticked in the names list
     if (!this.coverSkip) this.coverSkip = new Set();   // picture hashes unticked
     if (!this.siteLimit) this.siteLimit = PAGE_SIZE;
-    const FIELD = { title: 'name', artist: 'artist', album: 'album', albumArtist: 'album artist', genre: 'genre' };
-    const show = (v) => (v ? `“${v}”` : 'empty');
 
     this.statusEl = this._el('div', 'song-fixer-status song-fixer-sites-status', this.status);
     c.appendChild(this.statusEl);
@@ -742,14 +740,7 @@ class SongFixerView {
         const info = this._el('div', 'zune-diff-info');
         info.appendChild(this._el('div', 'zune-diff-title', item.track.title || item.path.split(/[/\\]/).pop()));
         info.appendChild(this._el('div', 'zune-diff-meta', `${item.track.artist || '?'} — ${item.track.album || '?'}`));
-        for (const [f, nv] of Object.entries(item.changes)) {
-          const line = this._el('div', 'song-fixer-result song-fixer-site-change');
-          line.appendChild(this._el('span', 'song-fixer-dim', `${FIELD[f] || f}: `));
-          line.appendChild(this._el('span', 'song-fixer-site-old', show(item.tags[f])));
-          line.appendChild(document.createTextNode(' → '));
-          line.appendChild(this._el('span', 'song-fixer-site-new', show(nv)));
-          info.appendChild(line);
-        }
+        this._siteChangeLines(info, item);
         row.appendChild(info);
         row.addEventListener('contextmenu', (e) => this._songMenu(e, item.path));
         names.appendChild(row);
@@ -762,7 +753,10 @@ class SongFixerView {
     }
     c.appendChild(names);
 
-    // 2. Album art
+    // 2. Songs on the Zune (including ones not on this computer)
+    this._drawZuneSites(c);
+
+    // 3. Album art
     const art = this._el('div', 'song-fixer-sites');
     art.appendChild(this._el('h3', 'song-fixer-sites-head', 'website pictures used as album art'));
     art.appendChild(this._el('div', 'song-fixer-note',
@@ -821,6 +815,129 @@ class SongFixerView {
       art.appendChild(grid);
     }
     c.appendChild(art);
+  }
+
+  _siteChangeLines(info, item) {
+    const FIELD = { title: 'name', artist: 'artist', album: 'album', albumArtist: 'album artist', genre: 'genre' };
+    const show = (v) => (v ? `“${v}”` : 'empty');
+    for (const [f, nv] of Object.entries(item.changes)) {
+      const line = this._el('div', 'song-fixer-result song-fixer-site-change');
+      line.appendChild(this._el('span', 'song-fixer-dim', `${FIELD[f] || f}: `));
+      line.appendChild(this._el('span', 'song-fixer-site-old', show(item.tags[f])));
+      line.appendChild(document.createTextNode(' → '));
+      line.appendChild(this._el('span', 'song-fixer-site-new', show(nv)));
+      info.appendChild(line);
+    }
+  }
+
+  /** Songs on the Zune whose details contain a website. */
+  _zuneSiteItems() {
+    const logic = window.songFixerLogic;
+    const out = [];
+    for (const d of this.explorer.zunePanel?.browseData?.music || []) {
+      if (d.handle == null) continue;
+      const tags = { title: d.title, artist: d.artist, album: d.album, genre: d.genre };
+      const changes = logic.stripSiteTags(tags, d.filename || '');
+      if (Object.keys(changes).length) out.push({ handle: d.handle, item: d, tags, changes });
+    }
+    return logic.sortSongs(out, 'title', (i) => ({ title: i.item.title, artist: i.item.artist, album: i.item.album, path: i.item.filename }));
+  }
+
+  _drawZuneSites(c) {
+    if (!this.zuneSiteSkip) this.zuneSiteSkip = new Set();
+    const sec = this._el('div', 'song-fixer-sites');
+    sec.appendChild(this._el('h3', 'song-fixer-sites-head', 'website names on your zune'));
+    const zp = this.explorer.zunePanel;
+    if (zp?.state !== 'connected' || !zp?.browseData) {
+      sec.appendChild(this._el('div', 'song-fixer-note',
+        'connect your zune and open it in the zune panel so its songs are read, then come back here to clean website names on the zune itself — including songs that aren’t on your computer.'));
+      c.appendChild(sec);
+      return;
+    }
+    const items = this._zuneSiteItems();
+    if (!items.length) {
+      sec.appendChild(this._el('div', 'song-fixer-note', 'no songs on your zune have a website in their details. ✓'));
+      c.appendChild(sec);
+      return;
+    }
+    const ticked = items.filter(i => !this.zuneSiteSkip.has(i.handle));
+    sec.appendChild(this._el('div', 'song-fixer-note',
+      `${items.length} song${items.length === 1 ? '' : 's'} on your zune ${items.length === 1 ? 'has' : 'have'} a website in the details. ` +
+      'they’re changed on the zune directly, nothing is re-sent. an album that was only a website is removed from the zune’s album list (the songs stay). ' +
+      'first time: try it on a few songs and check them on the zune before doing them all.'));
+    const bar = this._el('div', 'zune-diff-actions');
+    if (!this.running) {
+      const go = this._el('button', 'zune-sync-btn zune-push-btn', `clean ${ticked.length} song${ticked.length === 1 ? '' : 's'} on the zune`);
+      go.disabled = !ticked.length;
+      go.addEventListener('click', () => this._stripZuneSites(ticked));
+      bar.appendChild(go);
+      const few = this._el('button', 'song-fixer-link song-fixer-pick', 'tick only the first 3');
+      few.addEventListener('click', () => {
+        this.zuneSiteSkip = new Set(items.slice(3).map(i => i.handle));
+        this._draw();
+      });
+      bar.appendChild(few);
+    }
+    sec.appendChild(bar);
+
+    const all = this._el('label', 'zune-diff-select-all');
+    const allBox = this._el('input');
+    allBox.type = 'checkbox';
+    allBox.checked = ticked.length === items.length;
+    allBox.disabled = this.running;
+    allBox.addEventListener('change', () => {
+      if (allBox.checked) this.zuneSiteSkip.clear(); else for (const i of items) this.zuneSiteSkip.add(i.handle);
+      this._draw();
+    });
+    all.append(allBox, document.createTextNode(`${allBox.checked ? 'deselect' : 'select'} all (${items.length} songs)`));
+    sec.appendChild(all);
+
+    const limit = this.zuneSiteLimit || PAGE_SIZE;
+    for (const it of items.slice(0, limit)) {
+      const row = this._el('div', 'zune-diff-item song-fixer-row');
+      const box = this._el('input', 'zune-diff-check');
+      box.type = 'checkbox';
+      box.checked = !this.zuneSiteSkip.has(it.handle);
+      box.disabled = this.running;
+      box.addEventListener('change', () => {
+        if (box.checked) this.zuneSiteSkip.delete(it.handle); else this.zuneSiteSkip.add(it.handle);
+        this._draw();
+      });
+      row.appendChild(box);
+      const info = this._el('div', 'zune-diff-info');
+      info.appendChild(this._el('div', 'zune-diff-title', it.item.title || it.item.filename || '?'));
+      info.appendChild(this._el('div', 'zune-diff-meta', `${it.item.artist || '?'} — ${it.item.album || '?'}`));
+      this._siteChangeLines(info, it);
+      row.appendChild(info);
+      sec.appendChild(row);
+    }
+    if (items.length > limit) {
+      const more = this._el('button', 'song-fixer-link song-fixer-more', `show more (${items.length - limit} left)`);
+      more.addEventListener('click', () => { this.zuneSiteLimit = limit + PAGE_SIZE; this._draw(); });
+      sec.appendChild(more);
+    }
+    c.appendChild(sec);
+  }
+
+  async _stripZuneSites(items) {
+    this.running = true;
+    this._draw();
+    this._setStatus(`cleaning ${items.length} song${items.length === 1 ? '' : 's'} on the zune… keep it connected.`);
+    let res;
+    try {
+      res = await this.explorer.zunePanel.retagDeviceItems(items.map(i => ({
+        handle: i.handle, changes: i.changes, old: { artist: i.item.artist || '', album: i.item.album || '' },
+      })));
+    } catch (err) {
+      res = { done: [], errors: [{ error: err.message }] };
+    }
+    this.running = false;
+    const errs = res.errors || [];
+    const why = [...new Set(errs.map(e => e.error))].slice(0, 2).join('; ');
+    this._setStatus(`cleaned ${res.done?.length || 0} song${res.done?.length === 1 ? '' : 's'} on the zune` +
+      (errs.length ? `, ${errs.length} couldn’t be changed (${why})` : '') + '.' +
+      (res.done?.length ? ' check them on the zune; if a change doesn’t show, unplug and replug it.' : ''));
+    this._draw();
   }
 
   async _stripSites(paths) {

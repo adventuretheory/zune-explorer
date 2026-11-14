@@ -1567,6 +1567,122 @@ class ZuneManager extends EventEmitter {
     return { deleted, failed, errors, storage: this.storageInfo };
   }
 
+  /**
+   * Change song details on the Zune in place (no re-sending).
+   * @param edits [{ handle, changes: { title?, artist?, album?, albumArtist?, genre? }, old: { artist, album } }]
+   *   handle = browse handle; changes = new values ('' empties a field);
+   *   old = the values the Zune shows now (to find its album / artist entries)
+   * Albums: an album whose name changes is renamed when all its songs were
+   * edited the same way; songs whose album is emptied leave that album, and an
+   * album left with no songs is deleted (with its picture). Artists whose name
+   * is cleaned to something non-empty are renamed.
+   * @returns {{ done: [handle], errors: [{ handle, error }] }}
+   */
+  async retagTracks(edits) {
+    if (!this.connected) throw new Error('No Zune device connected');
+    if (this.transferring) throw new Error('Zune is busy receiving songs \u2014 wait for that to finish');
+    this._assertNotPulling();
+    this.transferring = true;
+    const PROPS = {
+      title: ObjectProperty.Name,
+      artist: ObjectProperty.Artist,
+      album: ObjectProperty.AlbumName,
+      albumArtist: ObjectProperty.AlbumArtist,
+      genre: ObjectProperty.Genre,
+    };
+    const done = [];
+    const errors = [];
+    const albumMoves = new Map(); // old album name -> [{ real, to }]
+    const artistRenames = new Map(); // old artist name -> new name
+    try {
+      for (const { handle, changes, old = {} } of edits) {
+        try {
+          let real = await this.resolveHandle(handle);
+          const set = async (h) => {
+            for (const [field, value] of Object.entries(changes || {})) {
+              if (!PROPS[field]) continue;
+              await this.mtp.setObjectPropString(h, PROPS[field], String(value ?? ''));
+            }
+          };
+          try {
+            await set(real);
+          } catch (err) {
+            // Same fallback as deleting: the atom ID may not be the MTP handle
+            if (!/InvalidObjectHandle/.test(err.message) || this.zmdbHandlesValid !== true || !this._zmdbEntries) throw err;
+            if (!this._handleCache) await this._buildHandleCache();
+            const alt = this._handleCache.get(handle);
+            if (alt == null || alt === real) throw err;
+            real = alt;
+            await set(real);
+          }
+          if ('title' in (changes || {}) && changes.title) {
+            const now = await this.mtp.getObjectPropString(real, ObjectProperty.Name).catch(() => null);
+            if (now != null && now !== changes.title) throw new Error('the zune kept the old name');
+          }
+          if ('album' in changes && old.album) {
+            if (!albumMoves.has(old.album)) albumMoves.set(old.album, []);
+            albumMoves.get(old.album).push({ real, to: changes.album || '' });
+          }
+          if (changes.artist && old.artist && changes.artist !== old.artist) artistRenames.set(old.artist, changes.artist);
+          done.push(handle);
+        } catch (err) {
+          errors.push({ handle, error: err.message });
+        }
+      }
+
+      if (albumMoves.size) {
+        let albumHandles = [];
+        try { albumHandles = await this.mtp.getObjectHandles(this.storageId, ObjectFormat.AbstractAudioAlbum); } catch (_) {}
+        for (const h of albumHandles) {
+          let name = null;
+          try { name = await this.mtp.getObjectPropString(h, ObjectProperty.Name); } catch (_) { continue; }
+          const moves = name && albumMoves.get(name);
+          if (!moves) continue;
+          try {
+            const refs = await this.mtp.getObjectReferences(h);
+            const moved = new Map(moves.map(m => [m.real, m.to]));
+            const targets = new Set(refs.filter(r => moved.has(r)).map(r => moved.get(r)));
+            if (!targets.size) continue;
+            const allMoved = refs.every(r => moved.has(r));
+            if (allMoved && targets.size === 1 && [...targets][0]) {
+              // Every song in it gets the same cleaned name: rename the album
+              await this.mtp.setObjectPropString(h, ObjectProperty.Name, [...targets][0]);
+            } else {
+              // Songs whose album was emptied leave it; others stay grouped
+              const keep = refs.filter(r => !(moved.has(r) && moved.get(r) === ''));
+              if (keep.length === 0) {
+                await this.mtp.deleteObject(h);
+                console.log(`ZuneManager: removed album "${name}" (no songs left)`);
+              } else if (keep.length !== refs.length) {
+                await this.mtp.setObjectReferences(h, keep);
+              }
+            }
+          } catch (err) {
+            console.log(`ZuneManager: could not update album "${name}": ${err.message}`);
+          }
+        }
+      }
+
+      if (artistRenames.size) {
+        let artistHandles = [];
+        try { artistHandles = await this.mtp.getObjectHandles(this.storageId, ObjectFormat.Artist); } catch (_) {}
+        for (const h of artistHandles) {
+          try {
+            const name = await this.mtp.getObjectPropString(h, ObjectProperty.Name);
+            if (artistRenames.has(name)) await this.mtp.setObjectPropString(h, ObjectProperty.Name, artistRenames.get(name));
+          } catch (_) { /* leave it */ }
+        }
+      }
+
+      if (done.length) {
+        try { await this.mtp.syncDeviceDB(1); } catch (_) { /* the Zune also updates on its own */ }
+      }
+    } finally {
+      this.transferring = false;
+    }
+    return { done, errors };
+  }
+
   async getFile(handle) {
     if (!this.connected) {
       throw new Error('No Zune device connected');

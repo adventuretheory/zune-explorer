@@ -2598,6 +2598,39 @@ class ZuneSyncPanel {
      * Delete items from the Zune and keep browse data, the device cache and the
      * diff in step. Returns the IPC result ({ success, deleted, errors, ... }).
      */
+    /**
+     * Change song details on the Zune itself. edits: [{ handle, changes, old }]
+     * (see ZuneManager.retagTracks). Updates the list here to match.
+     */
+    async retagDeviceItems(edits) {
+        const result = await window.electronAPI.zuneRetag(edits);
+        if (!result.success) throw new Error(result.error || 'could not change songs on the zune');
+        if (this.browseData) {
+            const done = new Set(result.done || []);
+            const byHandle = new Map((this.browseData.music || []).map(i => [i.handle, i]));
+            for (const e of edits) {
+                const item = done.has(e.handle) && byHandle.get(e.handle);
+                if (!item) continue;
+                for (const [f, v] of Object.entries(e.changes)) item[f] = v;
+            }
+            if (this.deviceKey) {
+                await window.electronAPI.zuneCacheSave(this.deviceKey, {
+                    model: this.cachedData?.model || this.lastStatus?.model || 'Zune',
+                    scanDurationMs: this.cachedData?.scanDurationMs || 0,
+                    counts: this._cacheCounts(this.browseData),
+                    contents: this.browseData,
+                });
+            }
+            if (this.diffActive) {
+                this._computeDiff();
+                this._renderDiffSummary();
+                this._destroyDiffScroller();
+                this._renderDiffList();
+            }
+        }
+        return result;
+    }
+
     async deleteDeviceItems(handles) {
         const result = await window.electronAPI.zuneDeleteObjects(handles);
         if (!result.success) throw new Error(result.error || 'could not delete from the zune');
