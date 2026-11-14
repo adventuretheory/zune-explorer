@@ -5856,7 +5856,7 @@ class ZuneExplorer {
                 const fn = d.filename || '';
                 allRows.push({
                     path: 'zune:' + d.handle, handle: d.handle, zuneOnly: true,
-                    title: tidy(d.title) || d.title || fn || '?', artist: tidy(d.artist), album: tidy(d.album) || '', genre: d.genre || '',
+                    title: tidy(d.title) || d.title || fn || '?', artist: tidy(d.artist), album: tidy(d.album) || '', genre: tidy(d.genre) || '',
                     year: 0, duration: secs, kbps: kbpsFrom(d.size || 0, secs),
                     format: /\.[a-z0-9]{2,4}$/i.test(fn) ? fn.split('.').pop().toLowerCase() : '', where: 'zune', q: null,
                     extraOf: zm.extraOf?.get(d.handle) || null,
@@ -5945,7 +5945,18 @@ class ZuneExplorer {
                     for (const [key] of COLS) {
                         const cell = document.createElement('div');
                         cell.className = 'songs-table-cell col-' + key;
-                        if (key === 'play') { if (!r.zuneOnly) cell.appendChild(self._songPlayButton(r.path)); }
+                        if (key === 'play') {
+                            if (!r.zuneOnly) cell.appendChild(self._songPlayButton(r.path));
+                            else {
+                                // Only on the Zune: copied off it, then played
+                                const zb = document.createElement('button');
+                                zb.className = 'song-play-btn zune-only-play';
+                                zb.textContent = '\u25B6';
+                                zb.title = 'play (copied from your zune first)';
+                                zb.dataset.zunePath = r.path;
+                                cell.appendChild(zb);
+                            }
+                        }
                         else if (key === 'where') {
                             cell.textContent = r.where === 'both' ? 'both' : r.where === 'zune' ? (r.extraOf ? 'zune \u00b7 extra copy' : 'zune only') : r.where === 'computer' ? 'computer' : '';
                             if (r.where) cell.classList.add('where-' + r.where);
@@ -6009,6 +6020,16 @@ class ZuneExplorer {
             body.addEventListener('click', (e) => {
                 const rb = e.target.closest('.song-restore-btn');
                 if (rb) { e.stopPropagation(); this.openRestoreDialog(rb.dataset.path); return; }
+                const zb = e.target.closest('.zune-only-play');
+                if (zb) {
+                    e.stopPropagation();
+                    const r = state.view.find(x => x.path === zb.dataset.zunePath);
+                    if (r) {
+                        if (!state.selected.has(r.path)) { state.selected = new Set([r.path]); state.anchor = r.path; this._songsTableSelChanged(); }
+                        this._playZuneOnly(r);
+                    }
+                    return;
+                }
                 const btn = e.target.closest('.song-play-btn');
                 if (!btn) {
                     // Selecting: click = just this one, \u2318/ctrl-click = add or remove, shift-click = range
@@ -6018,7 +6039,8 @@ class ZuneExplorer {
                     // Double-click / double-tap plays it
                     if (e.detail >= 2 && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
                         const r = state.view.find(x => x.path === p);
-                        if (r && !r.zuneOnly) this._songRowPlay(r, state.view.filter(x => !x.zuneOnly));
+                        if (r && r.zuneOnly) this._playZuneOnly(r);
+                        else if (r) this._songRowPlay(r, state.view.filter(x => !x.zuneOnly));
                         return;
                     }
                     if (e.shiftKey && state.anchor) {
@@ -6459,6 +6481,17 @@ class ZuneExplorer {
         setInterval(() => {
             if (btn.classList.contains('show') && (!target || !target.isConnected || target.offsetParent === null)) btn.classList.remove('show');
         }, 1000);
+    }
+
+    /** Play a song that's only on the Zune: it's copied into a small cache first. */
+    async _playZuneOnly(r) {
+        const zp = this.zunePanel;
+        if (!zp || zp.state !== 'connected') { this.showToast?.('connect your zune to play songs that are only on it'); return; }
+        this.showToast?.(`getting \u201c${r.title}\u201d from your zune\u2026`);
+        const res = await window.electronAPI.zunePreviewFile(r.handle);
+        if (!res.success) { this.showToast?.('couldn\u2019t play it: ' + res.error); return; }
+        const file = { path: res.path, name: r.title, title: r.title, artist: r.artist, album: r.album };
+        this.audioPlayer.play(file, [file]);
     }
 
     /** Fresh Zune list + "which songs are on it", after something changed on the Zune. */
