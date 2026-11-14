@@ -1640,6 +1640,8 @@ class ZuneSyncPanel {
 
         this._fixedBusy = true;
         btn.disabled = true;
+        const steps = (plan.replace.length + plan.remove.length ? 1 : 0) + (plan.replace.length + plan.resend.length ? 1 : 0);
+        const stepLabel = (n) => (steps > 1 ? ` (step ${n} of ${steps})` : '');
         btn.textContent = 'updating\u2026';
         let removedPaths = [];
         try {
@@ -1647,7 +1649,24 @@ class ZuneSyncPanel {
             const targets = [...plan.replace, ...plan.remove];
             let removedDeleted = [];
             if (targets.length) {
-                const res = await this.deleteDeviceItems(targets.map(r => r.handle));
+                btn.textContent = `removing old copies from the zune${stepLabel(1)}\u2026`;
+                const started = Date.now();
+                const res = await this.deleteDeviceItems(targets.map(r => r.handle), {
+                    onProgress: (p) => {
+                        if (p.phase === 'finding') {
+                            btn.textContent = `finding the old copies on the zune \u2014 ${p.scanned} files checked${stepLabel(1)}`;
+                            return;
+                        }
+                        // Rough time left, once a few have gone
+                        let left = '';
+                        if (p.done >= 5 && p.done < p.total) {
+                            const secs = Math.round(((Date.now() - started) / p.done) * (p.total - p.done) / 1000);
+                            left = secs >= 60 ? ` \u2014 about ${Math.round(secs / 60)} min left` : ` \u2014 about ${secs} s left`;
+                        }
+                        btn.textContent = `removing old copies from the zune: ${Math.min(p.done + 1, p.total)} of ${p.total}${left}${stepLabel(1)}`;
+                    },
+                });
+                btn.textContent = `starting to send the fixed songs${stepLabel(2)}\u2026`;
                 const failedHandles = new Set((res.errors || []).map(e => e.handle));
                 removedPaths = plan.replace.filter(r => !failedHandles.has(r.handle)).map(r => r.path);
                 removedDeleted = plan.remove.filter(r => !failedHandles.has(r.handle)).map(r => r.path);
@@ -2666,8 +2685,19 @@ class ZuneSyncPanel {
         return result;
     }
 
-    async deleteDeviceItems(handles) {
-        const result = await window.electronAPI.zuneDeleteObjects(handles);
+    async deleteDeviceItems(handles, { onProgress } = {}) {
+        // Progress while the Zune deletes (finding the files first can take a while too)
+        const hd = onProgress && window.electronAPI.onZuneDeleteProgress?.((p) => onProgress({ phase: 'deleting', ...p }));
+        const hp = onProgress && window.electronAPI.onZunePullProgress?.((p) => {
+            if (p.phase === 'resolving') onProgress({ phase: 'finding', scanned: p.scanned, total: p.total });
+        });
+        let result;
+        try {
+            result = await window.electronAPI.zuneDeleteObjects(handles);
+        } finally {
+            if (hd) window.electronAPI.offZuneDeleteProgress(hd);
+            if (hp) window.electronAPI.offZunePullProgress(hp);
+        }
         if (!result.success) throw new Error(result.error || 'could not delete from the zune');
         if (result.storage) this._updateStorage(result.storage);
         if (this.browseData) {
@@ -2824,8 +2854,17 @@ class ZuneSyncPanel {
         deleteBtn.classList.remove('confirm');
         deleteBtn.disabled = true;
 
+        const hd = window.electronAPI.onZuneDeleteProgress?.((p) => {
+            deleteBtn.textContent = `deleting ${Math.min(p.done + 1, p.total)} of ${p.total}\u2026`;
+        });
+        const hp = window.electronAPI.onZunePullProgress?.((p) => {
+            if (p.phase === 'resolving') deleteBtn.textContent = `finding them on the zune \u2014 ${p.scanned} files checked`;
+        });
         try {
-            const result = await window.electronAPI.zuneDeleteObjects(handles);
+            const result = await window.electronAPI.zuneDeleteObjects(handles).finally(() => {
+                if (hd) window.electronAPI.offZuneDeleteProgress(hd);
+                if (hp) window.electronAPI.offZunePullProgress(hp);
+            });
 
             if (result.success && result.storage) {
                 this._updateStorage(result.storage);

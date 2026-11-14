@@ -164,6 +164,9 @@ app.whenReady().then(async () => {
   zuneManager.on('browse-progress', (data) => {
     if (mainWindow) mainWindow.webContents.send('zune-browse-progress', data);
   });
+  zuneManager.on('delete-progress', (data) => {
+    if (mainWindow) mainWindow.webContents.send('zune-delete-progress', data);
+  });
   zuneManager.on('pull-progress', (data) => {
     if (mainWindow) mainWindow.webContents.send('zune-pull-progress', data);
   });

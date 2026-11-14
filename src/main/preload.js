@@ -76,6 +76,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return handler;
   },
   offZuneBrowseProgress: (handler) => ipcRenderer.removeListener('zune-browse-progress', handler),
+  onZuneDeleteProgress: (cb) => { const h = (e, d) => cb(d); ipcRenderer.on('zune-delete-progress', h); return h; },
+  offZuneDeleteProgress: (h) => ipcRenderer.removeListener('zune-delete-progress', h),
   onZunePullProgress: (callback) => {
     const handler = (_event, data) => callback(data);
     ipcRenderer.on('zune-pull-progress', handler);

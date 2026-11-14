@@ -1526,7 +1526,10 @@ class ZuneManager extends EventEmitter {
     let failed = 0;
     const errors = [];
 
+    let done = 0;
     for (const handle of handles) {
+      // Deleting hundreds of songs takes a while: say how far along it is
+      this.emit('delete-progress', { done: done++, total: handles.length });
       try {
         // Browse handles may be ZMDB atom IDs; delete the real MTP object
         const realHandle = await this.resolveHandle(handle);
@@ -1554,6 +1557,8 @@ class ZuneManager extends EventEmitter {
         }
       }
     }
+
+    this.emit('delete-progress', { done: handles.length, total: handles.length });
 
     // Refresh storage info
     if (this.connected) {

@@ -66,3 +66,13 @@ test('retagTracks sets names, renames a fully cleaned album and drops songs from
   assert.equal(synced, 1);
   assert.equal(zm.transferring, false);
 });
+
+test('deleting reports progress for each song', { skip: !ZuneManager && 'usb module not built' }, async () => {
+  const zm = connectedManager();
+  zm.mtp = { deleteObject: async () => {}, getStorageInfo: async () => ({}) };
+  const seen = [];
+  zm.on('delete-progress', (p) => seen.push(`${p.done}/${p.total}`));
+  const r = await zm.deleteObjects([1, 2, 3]);
+  assert.equal(r.deleted, 3);
+  assert.deepEqual(seen, ['0/3', '1/3', '2/3', '3/3']);
+});
