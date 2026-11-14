@@ -10,6 +10,14 @@ Original wallpapers in the Zune style, made for this fork. Each is
 - equalizer-city
 - retro-sun-grid
 
+Okinawa:
+
+- okinawa-beach
+- shisa-roof
+- bingata-pattern
+- whale-shark-reef
+- sanshin-sunset
+
 ## Putting one on the Zune
 
 1. In the app: settings → library → picture folders → + add folder, and pick
