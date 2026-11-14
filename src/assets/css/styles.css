@@ -4538,3 +4538,7 @@ body.zune-panel-open .content-area { padding-right: 372px; }
 .songs-table-cell.col-where.where-both { color: #8fd18f; }
 .songs-table-cell.col-where.where-computer { color: #888; }
 .songs-table-cell.col-where.where-zune { color: #ff9a4d; }
+
+/* Quality grades */
+.songs-table-cell.col-kbps.quality-good { color: #cfcfcf; }
+.songs-table-cell.col-kbps.quality-ok { color: #b9a46a; }

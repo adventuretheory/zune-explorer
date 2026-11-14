@@ -448,7 +448,7 @@ test('quality scan measures and remembers how much of the sound a file has', { s
     await sf.qualityScan([{ path: real, duration: 30 }, { path: fake, duration: 30 }], { onResult: (p, hz) => { got[path.basename(p)] = hz; } });
     const L = require('../src/shared/song-fixer-logic.js');
     assert.equal(L.qualityVerdict({ kbps: 320, format: 'mp3', cutoffHz: got['real320.mp3'] }), null);
-    assert.equal(L.qualityVerdict({ kbps: 320, format: 'mp3', cutoffHz: got['fake320.mp3'] }).level, 'fake');
+    assert.equal(L.qualityGrade({ kbps: 320, format: 'mp3', cutoffHz: got['fake320.mp3'] }).fake, true);
     // Remembered for next time
     const sf2 = new SongFixer({ ffmpegPath, dataDir: dir });
     assert.deepEqual(Object.keys(await sf2.qualityKnown()).sort(), [fake, real].sort());

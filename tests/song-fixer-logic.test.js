@@ -475,3 +475,21 @@ test('groupSiteCovers flags pictures tied to websites or spread over many albums
   ]);
   assert.deepEqual(groups.map(g => [g.hash, g.kind, g.count]), [['logo', 'site', 2], ['promo', 'spread', 3]]);
 });
+
+test('qualityGrade: measured sound beats the bitrate; 128 kbps alone is okay, not poor', () => {
+  const g = (x) => L.qualityGrade(x).grade;
+  assert.equal(g({ kbps: 128, format: 'mp3' }), 'ok');
+  assert.equal(g({ kbps: 96, format: 'mp3' }), 'poor');
+  assert.equal(g({ kbps: 96, format: 'm4a' }), 'ok');         // AAC at 96 ~ MP3 at 144
+  assert.equal(g({ kbps: 320, format: 'mp3' }), 'good');
+  assert.equal(g({ kbps: 64, format: 'wma', cutoffHz: 20000 }), 'ok'); // sounds decent once measured
+  assert.equal(g({ kbps: 64, format: 'mp3', cutoffHz: 12000 }), 'poor');
+  assert.equal(g({ kbps: 128, format: 'mp3', cutoffHz: 16000 }), 'ok');
+  assert.equal(g({ kbps: 320, format: 'mp3', cutoffHz: 20400 }), 'good');
+  const fake = L.qualityGrade({ kbps: 320, format: 'mp3', cutoffHz: 17000 });
+  assert.equal(fake.grade, 'ok');
+  assert.equal(fake.fake, true);
+  assert.equal(g({ kbps: 900, format: 'flac', cutoffHz: 21500 }), 'good');
+  assert.equal(L.qualityGrade({ kbps: 900, format: 'flac', cutoffHz: 17000 }).fake, true);
+  assert.equal(L.qualityVerdict({ kbps: 128, format: 'mp3' }), null);
+});

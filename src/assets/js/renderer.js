@@ -2359,7 +2359,7 @@ class ZuneSyncPanel {
         if (this.diffSelectedHandles.size === 0) return;
 
         const destResult = await window.electronAPI.pickPullDestination();
-        if (!destResult.success) return;
+        if (!destResult.success) return { cancelled: true };
 
         // Copies outside the music folders would vanish from the library on the
         // next start and show up as "missing" again, so add the folder.
@@ -2423,7 +2423,7 @@ class ZuneSyncPanel {
         }));
         if (check?.conflicts?.length) {
             onConflict = await window.electronAPI.zunePullAskConflicts(check.conflicts);
-            if (onConflict === 'cancel') return; // selection kept, nothing copied
+            if (onConflict === 'cancel') return { cancelled: true }; // selection kept, nothing copied
         }
         this.diffSelectedHandles.clear();
 
@@ -2441,6 +2441,7 @@ class ZuneSyncPanel {
         const failedHandles = [];
         let disconnected = false;
         let stopReason = 'zune disconnected';
+        const outcomes = {}; // handle -> 'copied' | 'already' | 'skipped' | 'failed'
 
         // The first copy may need to scan the whole Zune to locate files.
         // Show that, so a long scan doesn't look like a freeze.
@@ -2473,6 +2474,7 @@ class ZuneSyncPanel {
                         if (result.success && result.skipped) {
                             // Name taken by a different file, and the choice was "skip"
                             skippedSameName++;
+                            outcomes[handle] = 'skipped';
                             fileSuccess = true;
                             break;
                         }
@@ -2484,6 +2486,7 @@ class ZuneSyncPanel {
                                 pulledFiles.push({ path: result.path, size: result.size || 0 });
                             }
                             this._rememberPulled(handle, result.path);
+                            outcomes[handle] = result.alreadyCopied ? 'already' : 'copied';
                             fileSuccess = true;
                             break;
                         } else {
@@ -2512,6 +2515,7 @@ class ZuneSyncPanel {
                     failedCount++;
                     failedFiles.push(filename);
                     failedHandles.push(handle);
+                    if (!outcomes[handle]) outcomes[handle] = 'failed';
                 }
 
                 pullBtn.textContent = 'copying ' + (pulled + failedCount) + ' of ' + handles.length + ' \u2014 ' + filename;
@@ -2566,6 +2570,7 @@ class ZuneSyncPanel {
         this._renderDiffSummary();
         this._destroyDiffScroller();
         this._renderDiffList();
+        return { outcomes, failedFiles, stopReason: disconnected ? stopReason : null };
     }
 
     // Copy device episodes into the podcast library: each lands in the download
@@ -2700,8 +2705,9 @@ class ZuneSyncPanel {
         this.diffCategory = 'music';
         this.diffSelectedHandles = new Set(handles);
         let failed = new Set(handles);
+        let summary = null;
         try {
-            await this._pullFromDevice();
+            summary = await this._pullFromDevice();
             failed = new Set(this.diffSelectedHandles);
         } finally {
             this.diffSelectedHandles = before;
@@ -2709,7 +2715,25 @@ class ZuneSyncPanel {
             if (this.diffActive && prevCat !== 'music') { this._computeDiff(); this._renderDiffSummary(); this._destroyDiffScroller(); this._renderDiffList(); }
         }
         const pulled = this._pulledMap();
-        return handles.filter(h => pulled[h] && !failed.has(h));
+        const copied = handles.filter(h => pulled[h] && !failed.has(h));
+        copied.summary = summary;
+        return copied;
+    }
+
+    /** Copy songs and say what happened to each one (used from the songs table). */
+    async copyToComputerReport(handles) {
+        const copied = await this.copyToComputer(handles);
+        const sum = copied.summary;
+        if (!sum || sum.cancelled) return copied;
+        const by = { copied: 0, already: 0, skipped: 0, failed: 0 };
+        for (const h of handles) by[sum.outcomes?.[h] || 'failed']++;
+        const parts = [];
+        if (by.copied) parts.push(`${by.copied} copied`);
+        if (by.already) parts.push(`${by.already} already on your computer (an earlier copy, now linked)`);
+        if (by.skipped) parts.push(`${by.skipped} skipped \u2014 a different song with the same file name is already there (copy again and choose \u201ckeep both\u201d)`);
+        if (by.failed) parts.push(`${by.failed} couldn\u2019t be copied${sum.stopReason ? ' (' + sum.stopReason + ')' : sum.failedFiles?.length ? ' (' + sum.failedFiles.slice(0, 2).join(', ') + ')' : ''}`);
+        this.explorer.showToast?.(parts.join(' \u00b7 '));
+        return copied;
     }
 
     /**
@@ -5687,7 +5711,7 @@ class ZuneExplorer {
                 if (this.songsTable && container.contains(this.songsTable.root)) this.renderMusicSongsTable(container);
             }).catch(() => {});
         }
-        const verdict = window.songFixerLogic?.qualityVerdict || (() => null);
+        const gradeOf = window.songFixerLogic?.qualityGrade || (() => ({ grade: 'ok', reason: '' }));
         const st = this.songsTable && container.contains(this.songsTable.root) ? this.songsTable : null;
         // While the library is being read, batches arrive constantly; rebuilding
         // and re-sorting 10,000+ rows each time would make the app sluggish.
@@ -5715,9 +5739,11 @@ class ZuneExplorer {
             });
             const r = allRows[allRows.length - 1];
             r.where = zm && !zm.none ? (zm.onZune.has(path) ? 'both' : 'computer') : '';
+            r.g = r.drm ? null : gradeOf({ kbps: r.kbps, format: r.format, cutoffHz: this.musicLibrary.quality.get(path) || 0 });
+            // r.q: the ones worth a warning (poor sound, or copy-protected)
             r.q = r.drm
                 ? { level: 'drm', reason: 'copy-protected (Zune Pass / DRM): it only plays on the zune \u2014 it can\u2019t be played, converted or restored here' }
-                : verdict({ kbps: r.kbps, format: r.format, cutoffHz: this.musicLibrary.quality.get(path) || 0 });
+                : (r.g.grade === 'poor' ? { level: r.g.fake ? 'fake' : 'low', reason: r.g.reason } : null);
         }
         // Songs only on the Zune get rows too (they can't be played here)
         if (zm && !zm.none) {
@@ -5730,6 +5756,7 @@ class ZuneExplorer {
                     title: tidy(d.title) || d.title || fn || '?', artist: tidy(d.artist), album: tidy(d.album) || '', genre: d.genre || '',
                     year: 0, duration: secs, kbps: kbpsFrom(d.size || 0, secs),
                     format: /\.[a-z0-9]{2,4}$/i.test(fn) ? fn.split('.').pop().toLowerCase() : '', where: 'zune', q: null,
+                    extraOf: zm.extraOf?.get(d.handle) || null,
                 });
             }
         }
@@ -5752,7 +5779,7 @@ class ZuneExplorer {
             poor.className = 'songs-table-poor-btn';
             const check = document.createElement('button');
             check.className = 'songs-table-check-btn';
-            check.title = 'listens to a short part of each song to find files that claim high quality but were made from a low quality copy';
+            check.title = 'listens to a short part of every song and grades it by how much of the sound is really there (finds muffled songs and fake 320s) \u2014 a few minutes; remembered';
             check.addEventListener('click', () => this._qualityScanToggle());
             const shuffle = document.createElement('button');
             shuffle.className = 'songs-table-shuffle-btn';
@@ -5817,7 +5844,7 @@ class ZuneExplorer {
                         cell.className = 'songs-table-cell col-' + key;
                         if (key === 'play') { if (!r.zuneOnly) cell.appendChild(self._songPlayButton(r.path)); }
                         else if (key === 'where') {
-                            cell.textContent = r.where === 'both' ? 'both' : r.where === 'zune' ? 'zune only' : r.where === 'computer' ? 'computer' : '';
+                            cell.textContent = r.where === 'both' ? 'both' : r.where === 'zune' ? (r.extraOf ? 'zune \u00b7 extra copy' : 'zune only') : r.where === 'computer' ? 'computer' : '';
                             if (r.where) cell.classList.add('where-' + r.where);
                         }
                         else if (key === 'duration') cell.textContent = r.duration ? self.formatDuration(r.duration) : '';
@@ -5826,8 +5853,12 @@ class ZuneExplorer {
                                 cell.textContent = '\uD83D\uDD12 protected';
                                 cell.classList.add('quality-warn');
                             } else {
-                                cell.textContent = (r.q ? '\u26A0 ' : '') + (r.kbps ? r.kbps + ' kbps' : '');
-                                if (r.q) cell.classList.add('quality-warn');
+                                // \u2713 good \u00b7 ~ okay \u00b7 \u26A0 poor
+                                const g = r.g?.grade;
+                                const mark = g === 'poor' ? '\u26A0 ' : g === 'ok' ? '~ ' : g === 'good' ? '\u2713 ' : '';
+                                cell.textContent = mark + (r.kbps ? r.kbps + ' kbps' : '');
+                                if (g) cell.classList.add('quality-' + g);
+                                if (g === 'poor') cell.classList.add('quality-warn');
                             }
                         } else if (key === 'restore') {
                             if (r.zuneOnly) { el.appendChild(cell); continue; }
@@ -5840,8 +5871,12 @@ class ZuneExplorer {
                         }
                         else if (key === 'year') cell.textContent = r.year || '';
                         else cell.textContent = r[key] || '';
-                        if (key === 'where' && r.where) cell.title = r.where === 'both' ? 'on your computer and on the zune' : r.where === 'zune' ? 'only on the zune \u2014 right-click to copy it to your computer' : 'only on your computer';
-                        else if (key === 'kbps' && r.q) cell.title = r.q.reason;
+                        if (key === 'where' && r.where) cell.title = r.where === 'both' ? 'on your computer and on the zune'
+                            : r.where === 'zune' ? (r.extraOf
+                                ? 'your computer has this song, and it\u2019s already matched to another copy on the zune \u2014 this one is an extra copy (or a different version). copying it again just links it; or remove it from the zune.\n' + r.extraOf
+                                : 'only on the zune \u2014 right-click to copy it to your computer')
+                            : 'only on your computer';
+                        else if (key === 'kbps' && (r.q || r.g)) cell.title = r.q ? r.q.reason : r.g.reason;
                         else if (key !== 'play' && key !== 'restore') cell.title = cell.textContent;
                         el.appendChild(cell);
                     }
@@ -6185,7 +6220,7 @@ class ZuneExplorer {
         const ready = zp && zp.state === 'connected' && zp.browseData;
         const need = () => this.showToast?.('connect your zune (and open it in the zune panel) to do this');
         const items = [];
-        if (zuneOnly.length) items.push({ label: `Copy to Computer (${zuneOnly.length})`, title: 'copy these songs from the zune to your computer', action: () => (ready ? zp.copyToComputer(zuneOnly) : need()) });
+        if (zuneOnly.length) items.push({ label: `Copy to Computer (${zuneOnly.length})`, title: 'copy these songs from the zune to your computer', action: () => (ready ? zp.copyToComputerReport(zuneOnly) : need()) });
         if (onZune.length) items.push({ label: `Remove from Zune (${onZune.length})`, title: 'songs not on your computer are offered to be copied first', action: () => (ready ? zp.removeFromDevice(onZune) : need()) });
         return items;
     }
@@ -6248,7 +6283,20 @@ class ZuneExplorer {
             const res = zp._computeMusicDiff(device, pulled);
             const onZune = new Map();
             for (const m of res.matched) if (m.local?.path && !onZune.has(m.local.path)) onZune.set(m.local.path, m.device.handle);
-            this._zuneMembership = { onZune, zuneOnly: res.deviceOnly, source, when };
+            // A Zune-only song with the same title and artist as a song on the
+            // computer is usually a second copy on the Zune (the computer's copy
+            // is already paired with the first one)
+            const loose = (v) => String(v || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+                .replace(/&/g, ' and ').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+            const tidy = (v) => (window.songFixerLogic ? window.songFixerLogic.cleanTagText(v) : v) || '';
+            const localKeys = new Map();
+            for (const [p, t] of this.musicLibrary.tracks) localKeys.set(loose(tidy(t.title)) + '|' + loose(tidy(t.artist)), p);
+            const extraOf = new Map();
+            for (const d of res.deviceOnly) {
+                const p = localKeys.get(loose(tidy(d.title)) + '|' + loose(tidy(d.artist)));
+                if (p) extraOf.set(d.handle, p);
+            }
+            this._zuneMembership = { onZune, zuneOnly: res.deviceOnly, extraOf, source, when };
         } catch (e) {
             console.warn('zune membership failed', e);
             this._zuneMembership = { none: true };
@@ -6286,7 +6334,7 @@ class ZuneExplorer {
         const qs = this.qualityScanState;
         btn.textContent = qs?.running
             ? `checking quality ${qs.done} of ${qs.total} \u2014 stop`
-            : (qs?.finished ? 'check quality again' : 'check for fake quality');
+            : (qs?.finished ? 'check sound quality again' : 'check sound quality');
     }
 
     /** Measure songs that could be fake high quality (see audio-quality.js). */
@@ -6299,7 +6347,7 @@ class ZuneExplorer {
         for (const [path, t] of this.musicLibrary.tracks) {
             const kbps = kbpsFrom(sizes.get(path) || 0, t.duration || 0);
             const format = (path.split('.').pop() || '').toLowerCase();
-            if (window.songFixerLogic.qualityNeedsMeasuring({ kbps, format })) items.push({ path, duration: t.duration || 0 });
+            if (!t.drm && window.songFixerLogic.qualityNeedsMeasuring({ kbps, format })) items.push({ path, duration: t.duration || 0 });
         }
         Object.assign(qs, { running: true, done: 0, total: items.length, finished: false });
         this._qualityScanLabel();
@@ -6328,8 +6376,9 @@ class ZuneExplorer {
         const st = this.songsTable;
         if (st && st.root.isConnected) this.renderMusicSongsTable(st.root.parentElement);
         const poor = this.songsTable?.rows.filter(r => r.q).length || 0;
+        const fakes = this.songsTable?.rows.filter(r => r.g?.fake).length || 0;
         this.showToast?.(res?.success
-            ? `${res.stopped ? 'quality check stopped' : 'quality check done'} \u2014 ${poor} song${poor === 1 ? '' : 's'} marked \u26A0 poor quality`
+            ? `${res.stopped ? 'quality check stopped' : 'quality check done'} \u2014 ${poor} song${poor === 1 ? '' : 's'} \u26A0 poor` + (fakes ? `, ${fakes} not really the kbps they claim` : '')
             : 'quality check failed: ' + (res?.error || 'unknown error'));
     }
 

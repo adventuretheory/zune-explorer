@@ -922,31 +922,60 @@ const songFixerLogic = {
 // ---------------------------------------------------------------------------
 
 const LOSSLESS_FORMATS = new Set(['flac', 'wav', 'aiff', 'aif']);
+// Newer formats sound about as good as MP3 at ~2/3 of the bitrate
+const EFFICIENT_FORMATS = new Set(['m4a', 'aac', 'mp4', 'wma', 'ogg', 'opus']);
 
 /**
- * Is this song poor quality? `kbps` is worked out from size and length (so
- * it runs a little high when there's big album art); `cutoffHz` is the
- * highest frequency with real content (from audio-quality.js), if measured.
- * @returns {null | { level: 'low'|'fake', reason: string }}
+ * How good a song sounds: 'good', 'ok' or 'poor', with the reason.
+ * `kbps` comes from the file (or size and length); `cutoffHz` is the highest
+ * frequency with real sound in it (audio-quality.js), when measured. A
+ * measurement beats the bitrate: a 64 kbps AAC can sound fine, and a
+ * "320 kbps" MP3 made from a 128 kbps copy sounds like 128.
+ * @returns {{ grade: 'good'|'ok'|'poor'|'unknown', reason: string, fake?: boolean }}
  */
-function qualityVerdict({ kbps = 0, format = '', cutoffHz = 0 } = {}) {
+function qualityGrade({ kbps = 0, format = '', cutoffHz = 0 } = {}) {
   const fmt = String(format).toLowerCase().replace(/^\./, '');
   const lossless = LOSSLESS_FORMATS.has(fmt) || (fmt === 'm4a' && kbps > 600);
+  const khz = (hz) => (hz / 1000).toFixed(1);
+  // What an MP3 would need for the same sound
+  const eq = EFFICIENT_FORMATS.has(fmt) ? Math.round(kbps * 1.5) : kbps;
+
   if (lossless) {
-    if (cutoffHz && cutoffHz < 19500) return { level: 'fake', reason: 'lossless file made from an MP3 \u2014 sounds like the MP3 it came from' };
-    return null;
+    if (cutoffHz && cutoffHz < 19500) {
+      const g = cutoffHz < 15000 ? 'poor' : 'ok';
+      return { grade: g, fake: true, reason: `lossless file made from an MP3 \u2014 sounds like the MP3 it came from (sound stops at ${khz(cutoffHz)} kHz)` };
+    }
+    return { grade: 'good', reason: 'lossless (CD quality)' };
   }
-  if (cutoffHz && cutoffHz < 15000) return { level: 'low', reason: `very muffled \u2014 the sound stops at ${(cutoffHz / 1000).toFixed(1)} kHz` };
-  if (kbps > 0 && kbps < 150) return { level: 'low', reason: `low quality (${kbps} kbps) \u2014 can sound swishy or muffled; a 256\u2013320 kbps copy is better` };
-  if (cutoffHz && kbps >= 250 && cutoffHz < 18000) return { level: 'fake', reason: `not really ${kbps} kbps \u2014 made from a ~128 kbps copy (sound stops at ${(cutoffHz / 1000).toFixed(1)} kHz)` };
-  if (cutoffHz && kbps >= 180 && cutoffHz < 16500) return { level: 'fake', reason: `not really ${kbps} kbps \u2014 made from a lower quality copy (sound stops at ${(cutoffHz / 1000).toFixed(1)} kHz)` };
-  return null;
+
+  if (cutoffHz) {
+    const fake = (kbps >= 250 && cutoffHz < 18000) || (kbps >= 180 && cutoffHz < 16500);
+    const fakeNote = fake ? `not really ${kbps} kbps \u2014 made from a lower quality copy; ` : '';
+    if (cutoffHz < 15000) return { grade: 'poor', fake, reason: `${fakeNote}muffled \u2014 the sound stops at ${khz(cutoffHz)} kHz, so cymbals and \u201cs\u201d sounds are dull` };
+    if (cutoffHz < 17000) return { grade: 'ok', fake, reason: `${fakeNote}okay \u2014 a little dull at the top (sound stops at ${khz(cutoffHz)} kHz); fine on earbuds` };
+    if (fake || (cutoffHz < 19000 && eq < 160)) return { grade: 'ok', fake, reason: `${fakeNote}okay \u2014 typical of a 128 kbps copy; fine on earbuds, a 256\u2013320 kbps copy sounds better on good headphones` };
+    // Full range but very few bits: can still sound a bit swishy
+    if (eq < 112) return { grade: 'ok', fake, reason: `okay \u2014 full range (up to ${khz(cutoffHz)} kHz) but a low bitrate (${kbps} kbps), so busy parts can sound a little swishy` };
+    return { grade: 'good', fake, reason: `good \u2014 full sound (up to ${khz(cutoffHz)} kHz)` };
+  }
+
+  if (!kbps) return { grade: 'unknown', reason: 'quality unknown \u2014 \u201ccheck sound quality\u201d measures it' };
+  if (eq < 112) return { grade: 'poor', reason: `low quality (${kbps} kbps${eq !== kbps ? ' ' + fmt.toUpperCase() : ''}) \u2014 likely to sound swishy or muffled; \u201ccheck sound quality\u201d measures it` };
+  if (eq < 180) return { grade: 'ok', reason: `okay (${kbps} kbps) \u2014 usual for older CD rips and downloads; fine on earbuds` };
+  return { grade: 'good', reason: `good (${kbps} kbps)` };
 }
 
-/** Songs whose cutoff is worth measuring: everything not already flagged by bitrate. */
-function qualityNeedsMeasuring({ kbps = 0, format = '' } = {}) {
-  return !qualityVerdict({ kbps, format });
+/** The poor ones only (null when the song is fine), for warnings. */
+function qualityVerdict(info = {}) {
+  const g = qualityGrade(info);
+  return g.grade === 'poor' ? { level: g.fake ? 'fake' : 'low', reason: g.reason } : null;
 }
+
+/** Every song can be measured (copy-protected files just fail quietly). */
+function qualityNeedsMeasuring() {
+  return true;
+}
+songFixerLogic.qualityGrade = qualityGrade;
 songFixerLogic.qualityVerdict = qualityVerdict;
 songFixerLogic.qualityNeedsMeasuring = qualityNeedsMeasuring;
 
