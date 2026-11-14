@@ -473,7 +473,16 @@ test('groupSiteCovers flags pictures tied to websites or spread over many albums
     e('g', 'real', 'Disturbed', 'Ten Thousand Fists'), e('h', 'real', 'Disturbed', 'Ten Thousand Fists'),
     e('i', 'comp', 'P', 'Now 20'), e('j', 'comp', 'Q', 'Now 20'), e('k', 'comp', 'R', 'Now 20'),
   ]);
-  assert.deepEqual(groups.map(g => [g.hash, g.kind, g.count]), [['logo', 'site', 2], ['promo', 'spread', 3]]);
+  assert.deepEqual(groups.map(g => [g.hash, g.kind, g.count]), [['promo', 'spread', 3], ['logo', 'single', 2]]);
+  // The site's logo is on many artists; a real cover from the same site is on one
+  const g2 = L.groupSiteCovers([
+    e('a', 'dope', 'Akon', 'X', true), e('b', 'dope', 'Ludacris', 'Y', true),
+    e('c', 'xx', 'The Xx', 'xx', true), e('d', 'xx', 'The Xx', 'xx', true),
+  ]);
+  assert.deepEqual(g2.map(g => [g.hash, g.kind]), [['dope', 'site'], ['xx', 'single']]);
+  // Guests don't make a second artist
+  const g3 = L.groupSiteCovers([e('a', 'se7en', 'SE7EN', 'Digital Bounce', true), e('b', 'se7en', 'SE7EN feat. T.O.P', 'Digital Bounce', true)]);
+  assert.equal(g3[0].kind, 'single');
 });
 
 test('qualityGrade: measured sound beats the bitrate; 128 kbps alone is okay, not poor', () => {

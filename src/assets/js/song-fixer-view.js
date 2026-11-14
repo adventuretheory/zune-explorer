@@ -792,6 +792,15 @@ class SongFixerView {
       scan.addEventListener('click', () => this._scanCovers());
       artBar.appendChild(scan);
       if (this.coverGroups?.length) {
+        // Tick / untick every picture at once
+        const selAll = this._el('button', 'song-fixer-link song-fixer-pick', 'select all');
+        selAll.addEventListener('click', () => { this.coverSkip.clear(); this._draw(); });
+        const selNone = this._el('button', 'song-fixer-link song-fixer-pick', 'deselect all');
+        selNone.addEventListener('click', () => { this.coverSkip = new Set(this.coverGroups.map(g => g.hash)); this._draw(); });
+        const selLogos = this._el('button', 'song-fixer-link song-fixer-pick', 'only likely logos');
+        selLogos.title = 'tick only pictures that are on several different artists';
+        selLogos.addEventListener('click', () => { this.coverSkip = new Set(this.coverGroups.filter(g => g.kind !== 'site').map(g => g.hash)); this._draw(); });
+        artBar.append(selAll, selNone, selLogos);
         const chosen = this.coverGroups.filter(g => !this.coverSkip.has(g.hash));
         const n = chosen.reduce((sum, g) => sum + g.count, 0);
         const rm = this._el('button', 'zune-sync-btn zune-pull-btn', `remove ${chosen.length} picture${chosen.length === 1 ? '' : 's'} from ${n} song${n === 1 ? '' : 's'}`);
@@ -829,8 +838,10 @@ class SongFixerView {
         const text = this._el('div', 'song-fixer-cover-text');
         text.appendChild(this._el('div', 'zune-diff-title', `on ${g.count} song${g.count === 1 ? '' : 's'}`));
         text.appendChild(this._el('div', 'zune-diff-meta', g.kind === 'site'
-          ? `${g.siteSongs} of them ${g.siteSongs === 1 ? 'has' : 'have'} a website in the name`
-          : `same picture on ${g.artists} artists and ${g.albums} albums`));
+          ? `on ${g.artists} different artists, and ${g.siteSongs} of the songs have a website in the name \u2014 likely the site\u2019s logo`
+          : g.kind === 'single'
+            ? 'all by one artist \u2014 probably the real album cover (listed because the songs came from a website; leave it unticked unless it\u2019s a logo)'
+            : `same picture on ${g.artists} artists and ${g.albums} albums`));
         for (const ex of g.examples) text.appendChild(this._el('div', 'song-fixer-dim song-fixer-cover-ex', ex));
         card.append(box, img, text);
         grid.appendChild(card);
@@ -1005,10 +1016,14 @@ class SongFixerView {
       // Pictures not linked to a website start unticked: they need a look first
       this.coverSkip = new Set(res.groups.filter(g => g.kind !== 'site').map(g => g.hash));
       const site = res.groups.filter(g => g.kind === 'site').length;
+      const single = res.groups.filter(g => g.kind === 'single').length;
+      const spread = res.groups.filter(g => g.kind === 'spread').length;
+      const parts = [];
+      if (site) parts.push(`${site} likely website logo${site === 1 ? '' : 's'} (on several artists, ticked)`);
+      if (spread) parts.push(`${spread} shared by many albums (not ticked)`);
+      if (single) parts.push(`${single} probably real album cover${single === 1 ? '' : 's'} from downloaded albums (not ticked)`);
       this._setStatus(res.groups.length
-        ? `${res.groups.length} picture${res.groups.length === 1 ? '' : 's'} to look at` +
-          (site ? ` — ${site} used on songs with website names (ticked)` : '') +
-          (res.groups.length > site ? `, ${res.groups.length - site} shared by many different albums (not ticked: tick the ones that are a website)` : '') + '.'
+        ? `${res.groups.length} picture${res.groups.length === 1 ? '' : 's'} to look at: ${parts.join(', ')}. look at each one before removing.`
         : '');
     }
     this._draw();

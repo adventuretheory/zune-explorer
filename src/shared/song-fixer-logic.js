@@ -771,6 +771,8 @@ function stripSiteTags(tags, filePath = '') {
  *   file name — almost always the site's logo;
  * - "spread": the same picture is on songs by 3+ artists and 3+ albums, which
  *   real album covers aren't (compilations share one album name).
+ * - "single": songs with a website in their details, but all by one artist:
+ *   usually the real cover of an album downloaded from that site.
  * @param entries [{ path, hash, title, artist, album, siteLinked }]
  * @returns [{ hash, kind, paths, count, siteSongs, artists, albums, examples }]
  *          most suspicious first
@@ -785,9 +787,18 @@ function groupSiteCovers(entries) {
   const groups = [];
   for (const [hash, list] of byHash) {
     const siteSongs = list.filter(e => e.siteLinked).length;
-    const artists = new Set(list.map(e => norm(cleanTagText(e.artist))).filter(Boolean)).size;
+    // Main artist only: "SE7EN feat. T.O.P" and "SE7EN" are one artist
+    const mainArtist = (a) => norm(cleanTagText(a).split(/\s+(?:feat\.?|ft\.?|featuring|with|x|vs\.?)\s+|\s*[,&\/]\s*/i)[0]);
+    const artists = new Set(list.map(e => mainArtist(e.artist)).filter(Boolean)).size;
     const albums = new Set(list.map(e => norm(cleanTagText(e.album))).filter(Boolean)).size;
-    const kind = siteSongs > 0 ? 'site' : (artists >= 3 && albums >= 3 ? 'spread' : null);
+    // A real album cover belongs to one artist. Songs downloaded from a site
+    // can carry the site's name AND the real cover, so a website in the
+    // details only marks the picture as the site's when it's on several
+    // artists (like the site's logo is).
+    const kind = siteSongs > 0 && artists >= 2 ? 'site'
+      : artists >= 3 && albums >= 3 ? 'spread'
+      : siteSongs > 0 ? 'single'
+      : null;
     if (!kind) continue;
     groups.push({
       hash, kind,
@@ -797,7 +808,7 @@ function groupSiteCovers(entries) {
       examples: list.slice(0, 3).map(e => [cleanTagText(e.title) || fileStem(e.path), cleanTagText(e.artist)].filter(Boolean).join(' \u2014 ')),
     });
   }
-  const rank = (g) => (g.kind === 'site' ? 1e6 : 0) + g.siteSongs * 1000 + g.count;
+  const rank = (g) => ({ site: 2e6, spread: 1e6, single: 0 }[g.kind]) + g.siteSongs * 1000 + g.count;
   return groups.sort((a, b) => rank(b) - rank(a));
 }
 
