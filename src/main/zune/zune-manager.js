@@ -281,8 +281,10 @@ class ZuneManager extends EventEmitter {
    *   one song missing.
    * @param {(filePath: string) => void} [opts.onOldRemoved] called as soon as
    *   an old copy is gone (so an interrupted update can resend it)
+   * @param {(filePath: string) => void} [opts.onSent] called as soon as a
+   *   song is on the Zune (so a stopped update doesn't send it again)
    */
-  async sendFiles(filePaths, { replaceArt = false, replace = null, onOldRemoved = null } = {}) {
+  async sendFiles(filePaths, { replaceArt = false, replace = null, onOldRemoved = null, onSent = null } = {}) {
     if (!this.connected) {
       throw new Error('No Zune device connected');
     }
@@ -521,6 +523,7 @@ class ZuneManager extends EventEmitter {
 
           if (fileSucceeded) {
             succeeded.push(filePath);
+            try { onSent?.(filePath); } catch (_) { /* bookkeeping only */ }
           } else {
             failed.push({ file: filePath, error: lastError ? lastError.message : 'unknown error' });
             console.log(`ZuneManager: giving up on ${path.basename(filePath)} after ${MAX_RETRIES} attempts`);

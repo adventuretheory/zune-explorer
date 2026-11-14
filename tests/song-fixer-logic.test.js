@@ -493,3 +493,15 @@ test('qualityGrade: measured sound beats the bitrate; 128 kbps alone is okay, no
   assert.equal(L.qualityGrade({ kbps: 900, format: 'flac', cutoffHz: 17000 }).fake, true);
   assert.equal(L.qualityVerdict({ kbps: 128, format: 'mp3' }), null);
 });
+
+test('planZuneUpdate does not resend a song whose new copy already went on before an update was stopped', () => {
+  const pending = [
+    { path: '/m/a.mp3', fileName: 'a.mp3', before: { title: 'Old A', artist: 'X' }, removedFromZune: true },
+    { path: '/m/b.mp3', fileName: 'b.mp3', before: { title: 'Old B', artist: 'X' }, removedFromZune: true },
+  ];
+  const device = [{ handle: 5, filename: 'a.mp3', title: 'New A', artist: 'X', album: 'Hits' }];
+  const current = new Map([['/m/a.mp3', { title: 'New A', artist: 'X', album: 'Hits' }], ['/m/b.mp3', { title: 'New B', artist: 'X', album: 'Hits' }]]);
+  const plan = L.planZuneUpdate(pending, device, current);
+  assert.deepEqual(plan.upToDate, ['/m/a.mp3']);
+  assert.deepEqual(plan.resend, ['/m/b.mp3']);
+});

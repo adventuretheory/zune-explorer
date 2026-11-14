@@ -527,6 +527,9 @@ ipcMain.handle('zune-send-files', async (event, filePaths, opts) => {
       replace,
       // Remembered right away, so a stopped update resends this song next time
       onOldRemoved: replace ? (p) => { songFixer.zuneMarkRemoved([p]).catch(() => {}); } : null,
+      // Updating fixed songs: each one counts as done the moment it's on the
+      // Zune, so quitting part-way and updating again carries on from there
+      onSent: opts?.markDone ? (p) => { songFixer.zuneDone([p]).catch(() => {}); } : null,
     });
     return { success: true, ...(result || {}) };
   } catch (error) {

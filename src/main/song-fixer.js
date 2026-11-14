@@ -891,14 +891,29 @@ class SongFixer {
   }
 
   /** removed: the old copy is off the Zune (resend even if no match is found later). */
-  async zuneMarkRemoved(paths) {
+  zuneMarkRemoved(paths) {
+    return this._serial(() => this._zuneMarkRemoved(paths));
+  }
+
+  async _zuneMarkRemoved(paths) {
     const set = new Set(paths);
     const list = await this._readPending();
     for (const e of list) if (set.has(e.path)) e.removedFromZune = true;
     await this._writePending(list);
   }
 
-  async zuneDone(paths) {
+  /** Run changes to the Zune lists one after another (songs finish close together). */
+  _serial(fn) {
+    const run = (this._pendingQueue || Promise.resolve()).then(fn, fn);
+    this._pendingQueue = run.catch(() => {});
+    return run;
+  }
+
+  zuneDone(paths) {
+    return this._serial(() => this._zuneDone(paths));
+  }
+
+  async _zuneDone(paths) {
     const set = new Set(paths);
     await this._writePending((await this._readPending()).filter(e => !set.has(e.path)));
     // Remember each file as it is now: unless it changes again (a new fix),

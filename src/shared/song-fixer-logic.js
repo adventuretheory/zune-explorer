@@ -282,8 +282,15 @@ function planZuneUpdate(pending, device, current, { libraryKeys = new Set(), lin
       continue;
     }
 
-    if (e.removedFromZune) { plan.resend.push(e.path); continue; }
     const now = current.get(e.path) || {};
+    if (e.removedFromZune) {
+      // The old copy is gone. If an update was stopped after the new copy
+      // went on, it's already there (same tags): don't send it twice.
+      const sentAlready = now.title ? take((byTags.get(tagKey(now.title, now.artist)) || []).filter(d => full(d) === full(now))) : null;
+      if (sentAlready) { used.add(sentAlready); plan.upToDate.push(e.path); continue; }
+      plan.resend.push(e.path);
+      continue;
+    }
     // The old copy: same file name, or the tags the song had before it was fixed
     const old = findOld(e);
     if (old) {

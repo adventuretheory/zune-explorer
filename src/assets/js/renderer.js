@@ -1693,7 +1693,7 @@ class ZuneSyncPanel {
             if (toSend.length) btn.textContent = `replacing fixed songs one at a time${stepLabel(2)}\u2026`;
             // Fixed songs may have new (or removed website) album art: replace the album's picture too
             const sent = toSend.length
-                ? await window.electronAPI.zuneSendFiles(toSend, { replaceArt: true, replace: replaceMap })
+                ? await window.electronAPI.zuneSendFiles(toSend, { replaceArt: true, replace: replaceMap, markDone: true })
                 : { success: true, succeeded: [] };
             if (!sent.success) throw new Error(sent.error || 'sending failed');
             const succeeded = sent.succeeded || [];
