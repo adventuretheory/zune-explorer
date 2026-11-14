@@ -1978,6 +1978,19 @@ class ZuneSyncPanel {
                         if (metaSpan.textContent) infoDiv.appendChild(metaSpan);
                         el.appendChild(infoDiv);
 
+                        // Remove one song from the Zune (copied to the computer first if it isn't there)
+                        var devItem = panel.diffTab === 'matched' ? item.device : (panel.diffTab === 'device-only' ? item : null);
+                        if (devItem && devItem.handle != null && panel.diffCategory === 'music') {
+                            var rm = document.createElement('button');
+                            rm.className = 'zune-diff-remove';
+                            rm.textContent = 'remove';
+                            rm.dataset.handle = String(devItem.handle);
+                            rm.title = panel.diffTab === 'matched'
+                                ? 'remove from the zune \u2014 it stays on your computer'
+                                : 'remove from the zune \u2014 it isn\u2019t on your computer, so you\u2019ll be asked to copy it first';
+                            el.appendChild(rm);
+                        }
+
                     }
                 },
                 overscan: 15,
@@ -2024,6 +2037,13 @@ class ZuneSyncPanel {
 
             // Event delegation: header click to collapse/expand
             this._diffClickHandler = function(e) {
+                var rmBtn = e.target.closest('.zune-diff-remove');
+                if (rmBtn) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    panel.removeOneFromDevice(Number(rmBtn.dataset.handle));
+                    return;
+                }
                 var playBtn = e.target.closest('.zune-diff-play');
                 if (playBtn) {
                     e.preventDefault();
@@ -2658,6 +2678,55 @@ class ZuneSyncPanel {
             }
         }
         return result;
+    }
+
+    /**
+     * Remove one song from the Zune. If the computer has it, just confirm.
+     * If not, offer to copy it over first and only remove it once the copy
+     * has worked.
+     */
+    async removeOneFromDevice(handle) {
+        if (this._removingOne) return;
+        const device = (this.browseData?.music || []).find(d => d.handle === handle);
+        if (!device) return;
+        const match = (this.diffResult?.matched || []).find(m => m.device && m.device.handle === handle);
+        const onComputer = !!(match && match.local && match.local.path && this.explorer.musicLibrary.tracks.has(match.local.path));
+        const tidy = (v) => (window.songFixerLogic ? window.songFixerLogic.cleanTagText(v) : v) || v || '';
+        const name = [tidy(device.title) || device.filename || 'this song', tidy(device.artist)].filter(Boolean).join(' \u2014 ');
+        const choice = await window.electronAPI.zuneRemoveAsk(name, onComputer ? match.local.path : null);
+        if (choice === 'cancel') return;
+        this._removingOne = true;
+        try {
+            if (choice === 'copy') {
+                // Copy just this song (keeping whatever else was ticked), then check it landed
+                const before = new Set(this.diffSelectedHandles);
+                this.diffSelectedHandles = new Set([handle]);
+                try {
+                    await this._pullFromDevice();
+                } finally {
+                    const failed = this.diffSelectedHandles.has(handle);
+                    this.diffSelectedHandles = before;
+                    this.diffSelectedHandles.delete(handle);
+                    if (failed) this.diffSelectedHandles.add(handle);
+                }
+                const copied = this._pulledMap()[handle];
+                if (!copied || this.diffSelectedHandles.has(handle)) {
+                    this.explorer.showToast?.(`\u201c${name}\u201d wasn\u2019t copied, so it was left on the zune`);
+                    this.diffSelectedHandles.delete(handle);
+                    this._renderDiffList();
+                    return;
+                }
+            }
+            const result = await this.deleteDeviceItems([handle]);
+            const err = (result.errors || [])[0];
+            this.explorer.showToast?.(err
+                ? `couldn\u2019t remove \u201c${name}\u201d from the zune: ${err.error}`
+                : `removed \u201c${name}\u201d from the zune` + (choice === 'copy' ? ' \u2014 it\u2019s on your computer now' : ''));
+        } catch (e) {
+            this.explorer.showToast?.(`couldn\u2019t remove \u201c${name}\u201d: ${e.message}`);
+        } finally {
+            this._removingOne = false;
+        }
     }
 
     async _deleteFromDevice() {
@@ -5559,8 +5628,17 @@ class ZuneExplorer {
         if (this.songsScroller) { this.songsScroller.destroy(); this.songsScroller = null; }
         const COLS = [
             ['play', ''], ['title', 'title'], ['duration', 'time'], ['artist', 'artist'], ['album', 'album'],
-            ['genre', 'genre'], ['year', 'year'], ['kbps', 'quality'], ['format', 'type'],
+            ['genre', 'genre'], ['year', 'year'], ['kbps', 'quality'], ['restore', ''], ['format', 'type'],
         ];
+        // Measured sound quality (fake 320s etc.), saved between runs
+        if (!this.musicLibrary.quality) {
+            this.musicLibrary.quality = new Map();
+            window.electronAPI.qualityKnown?.().then((known) => {
+                for (const [p, hz] of Object.entries(known || {})) this.musicLibrary.quality.set(p, hz);
+                if (this.songsTable && container.contains(this.songsTable.root)) this.renderMusicSongsTable(container);
+            }).catch(() => {});
+        }
+        const verdict = window.songFixerLogic?.qualityVerdict || (() => null);
         const st = this.songsTable && container.contains(this.songsTable.root) ? this.songsTable : null;
         // While the library is being read, batches arrive constantly; rebuilding
         // and re-sorting 10,000+ rows each time would make the app sluggish.
@@ -5583,6 +5661,8 @@ class ZuneExplorer {
                 year: t.year || 0, duration: dur, kbps: kbpsFrom(sizes.get(path) || 0, dur),
                 format: (path.split('.').pop() || '').toLowerCase(),
             });
+            const r = allRows[allRows.length - 1];
+            r.q = verdict({ kbps: r.kbps, format: r.format, cutoffHz: this.musicLibrary.quality.get(path) || 0 });
         }
 
         if (!st) {
@@ -5598,7 +5678,14 @@ class ZuneExplorer {
             search.placeholder = 'search songs, artists, albums\u2026';
             const count = document.createElement('span');
             count.className = 'songs-table-count';
-            top.append(search, count);
+            // Poor quality: only those, and a deeper check for fake 320s
+            const poor = document.createElement('button');
+            poor.className = 'songs-table-poor-btn';
+            const check = document.createElement('button');
+            check.className = 'songs-table-check-btn';
+            check.title = 'listens to a short part of each song to find files that claim high quality but were made from a low quality copy';
+            check.addEventListener('click', () => this._qualityScanToggle());
+            top.append(search, count, poor, check);
             root.appendChild(top);
 
             const head = document.createElement('div');
@@ -5610,7 +5697,8 @@ class ZuneExplorer {
             root.appendChild(body);
             container.appendChild(root);
 
-            const state = { root, head, body, search, count, rows: [], view: [], sortKey: 'title', sortDir: 1, query: '' };
+            const state = { root, head, body, search, count, poor, check, rows: [], view: [], sortKey: 'title', sortDir: 1, query: '', poorOnly: false };
+            poor.addEventListener('click', () => { state.poorOnly = !state.poorOnly; this._songsTableUpdate(false); });
             this.songsTable = state;
 
             const self = this;
@@ -5627,10 +5715,21 @@ class ZuneExplorer {
                         cell.className = 'songs-table-cell col-' + key;
                         if (key === 'play') cell.appendChild(self._songPlayButton(r.path));
                         else if (key === 'duration') cell.textContent = r.duration ? self.formatDuration(r.duration) : '';
-                        else if (key === 'kbps') cell.textContent = r.kbps ? r.kbps + ' kbps' : '';
+                        else if (key === 'kbps') {
+                            cell.textContent = (r.q ? '\u26A0 ' : '') + (r.kbps ? r.kbps + ' kbps' : '');
+                            if (r.q) cell.classList.add('quality-warn');
+                        } else if (key === 'restore') {
+                            const b = document.createElement('button');
+                            b.className = 'song-restore-btn';
+                            b.dataset.path = r.path;
+                            b.textContent = 'restore';
+                            b.title = 'clean up this song\u2019s sound: even out the volume, reduce hiss, remove clicks or rumble';
+                            cell.appendChild(b);
+                        }
                         else if (key === 'year') cell.textContent = r.year || '';
                         else cell.textContent = r[key] || '';
-                        if (key !== 'play') cell.title = cell.textContent;
+                        if (key === 'kbps' && r.q) cell.title = r.q.reason;
+                        else if (key !== 'play' && key !== 'restore') cell.title = cell.textContent;
                         el.appendChild(cell);
                     }
                 },
@@ -5646,6 +5745,8 @@ class ZuneExplorer {
                 this._songsTableUpdate(false);
             });
             body.addEventListener('click', (e) => {
+                const rb = e.target.closest('.song-restore-btn');
+                if (rb) { e.stopPropagation(); this.openRestoreDialog(rb.dataset.path); return; }
                 const btn = e.target.closest('.song-play-btn');
                 if (!btn) return;
                 e.stopPropagation();
@@ -5686,6 +5787,11 @@ class ZuneExplorer {
             ? st.rows.filter(r => r.title.toLowerCase().includes(q) || r.artist.toLowerCase().includes(q) ||
                 r.album.toLowerCase().includes(q) || r.genre.toLowerCase().includes(q))
             : st.rows.slice();
+        const poorCount = view.filter(r => r.q).length;
+        if (st.poorOnly) view = view.filter(r => r.q);
+        st.poor.textContent = st.poorOnly ? `show all songs` : `\u26A0 poor quality only (${poorCount})`;
+        st.poor.classList.toggle('active', st.poorOnly);
+        this._qualityScanLabel();
         const key = st.sortKey, dir = st.sortDir;
         const numeric = key === 'duration' || key === 'year' || key === 'kbps';
         const coll = this._collator || (this._collator = new Intl.Collator(undefined, { sensitivity: 'base', numeric: true }));
@@ -5710,6 +5816,204 @@ class ZuneExplorer {
         }
         st.count.textContent = `${view.length} song${view.length === 1 ? '' : 's'}`;
         st.scroller.setData(view.map(r => ({ type: 'trow', data: r })), { preserveScroll });
+    }
+
+    /**
+     * Restore one song's sound: pick fixes, compare a 30 second before/after
+     * preview, then save. The original is kept so it can be undone.
+     */
+    openRestoreDialog(filePath) {
+        document.querySelector('.restore-overlay')?.remove();
+        const t = this.musicLibrary.tracks.get(filePath) || {};
+        const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+        const overlay = el('div', 'restore-overlay');
+        const box = el('div', 'restore-dialog');
+        overlay.appendChild(box);
+
+        const close = () => {
+            audio.pause();
+            audio.removeAttribute('src');
+            window.removeEventListener('keydown', onKey, true);
+            overlay.remove();
+        };
+        const onKey = (e) => {
+            if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); }
+            else if (e.key === ' ' && !e.target.closest?.('button')) { e.preventDefault(); e.stopPropagation(); if (audio.src) (audio.paused ? audio.play() : audio.pause()); }
+        };
+        window.addEventListener('keydown', onKey, true);
+        overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
+
+        const x = el('button', 'restore-close', '✕');
+        x.title = 'close';
+        x.addEventListener('click', close);
+        box.appendChild(x);
+        box.appendChild(el('div', 'restore-title', 'restore sound'));
+        box.appendChild(el('div', 'restore-song', `${t.title || filePath.split(/[/\\]/).pop()}${t.artist ? ' — ' + t.artist : ''}`));
+
+        // Low quality can't be undone by filters: say so up front
+        const row = this.songsTable?.rows.find(r => r.path === filePath);
+        if (row?.q) {
+            box.appendChild(el('div', 'restore-warn',
+                `⚠ ${row.q.reason}. restoring can clean up the sound, but it can’t bring back detail that was thrown away — for that, a better copy of the song is the real fix.`));
+        }
+
+        const OPTIONS = [
+            ['volume', 'even out the volume', 'makes quiet songs louder and loud ones quieter, so songs play at a similar level', true],
+            ['hiss', 'reduce hiss', 'for a steady background hiss (old tapes, rips); gentle so the music isn’t muffled', false],
+            ['clicks', 'remove clicks & crackle', 'for vinyl rips with pops and crackle', false],
+            ['rumble', 'remove rumble', 'takes out very deep rumble below the music (turntable motor, wind, handling)', false],
+        ];
+        const opts = {};
+        const list = el('div', 'restore-options');
+        for (const [key, label, help, on] of OPTIONS) {
+            opts[key] = on;
+            const lab = el('label', 'restore-option');
+            const cb = el('input');
+            cb.type = 'checkbox';
+            cb.checked = on;
+            cb.addEventListener('change', () => { opts[key] = cb.checked; resetPreview(); refresh(); });
+            const txt = el('div');
+            txt.append(el('div', 'restore-option-label', label), el('div', 'restore-option-help', help));
+            lab.append(cb, txt);
+            list.appendChild(lab);
+        }
+        box.appendChild(list);
+
+        const status = el('div', 'restore-status');
+        const compare = el('div', 'restore-compare');
+        const audio = el('audio');
+        const playOrig = el('button', 'restore-ab', '▶ original');
+        const playNew = el('button', 'restore-ab', '▶ restored');
+        compare.append(playOrig, playNew);
+        compare.style.display = 'none';
+        let clips = null;
+        let which = null;
+        const play = (kind) => {
+            if (!clips) return;
+            // Keep the position when switching, so the same moment can be compared
+            const at = audio.src ? audio.currentTime : 0;
+            if (which === kind && !audio.paused) { audio.pause(); refreshAB(); return; }
+            which = kind;
+            audio.src = window.pathUtils.toFileUrl(kind === 'original' ? clips.original : clips.restored);
+            audio.currentTime = at;
+            audio.play().catch(() => {});
+            refreshAB();
+        };
+        const refreshAB = () => {
+            const playing = !audio.paused;
+            playOrig.textContent = (playing && which === 'original' ? '⏸' : '▶') + ' original';
+            playNew.textContent = (playing && which === 'restored' ? '⏸' : '▶') + ' restored';
+            playOrig.classList.toggle('active', which === 'original');
+            playNew.classList.toggle('active', which === 'restored');
+        };
+        audio.addEventListener('pause', refreshAB);
+        audio.addEventListener('play', refreshAB);
+        playOrig.addEventListener('click', () => play('original'));
+        playNew.addEventListener('click', () => play('restored'));
+        const resetPreview = () => { audio.pause(); audio.removeAttribute('src'); clips = null; which = null; compare.style.display = 'none'; };
+
+        const actions = el('div', 'restore-actions');
+        const preview = el('button', 'zune-sync-btn zune-push-btn', 'preview 30 seconds');
+        const save = el('button', 'zune-sync-btn zune-pull-btn', 'restore song');
+        actions.append(preview, save);
+        box.append(actions, compare, status);
+        let busy = false;
+        const any = () => Object.values(opts).some(Boolean);
+        const refresh = () => { preview.disabled = save.disabled = busy || !any(); };
+
+        preview.addEventListener('click', async () => {
+            busy = true; refresh();
+            resetPreview();
+            status.textContent = 'making a 30 second preview…';
+            if (this.audioPlayer?.isPlaying) this.audioPlayer.pause();
+            const res = await window.electronAPI.songFixerRestorePreview(filePath, { ...opts });
+            busy = false; refresh();
+            if (!res.success) { status.textContent = 'couldn’t make a preview: ' + res.error; return; }
+            clips = res;
+            compare.style.display = '';
+            status.textContent = 'switch between original and restored to compare the same moment (space plays / pauses).';
+            play('restored');
+        });
+
+        save.addEventListener('click', async () => {
+            busy = true; refresh();
+            resetPreview();
+            status.textContent = 'restoring… this takes a few seconds per minute of music.';
+            const res = await window.electronAPI.songFixerRestore(String(Date.now()), filePath, { ...opts });
+            busy = false;
+            if (!res.success) { refresh(); status.textContent = 'couldn’t restore: ' + res.error; return; }
+            await window.electronAPI.batchScanAudioMetadata([filePath], { includeArt: true });
+            list.remove();
+            actions.textContent = '';
+            const undo = el('button', 'zune-sync-btn', 'undo');
+            undo.addEventListener('click', async () => {
+                undo.disabled = true;
+                const u = await window.electronAPI.songFixerUndo();
+                await window.electronAPI.batchScanAudioMetadata([filePath], { includeArt: true });
+                status.textContent = u.success && !(u.failed || []).length ? 'undone — the original is back.' : 'undo failed: ' + (u.error || u.failed?.[0]?.error || '');
+                undo.remove();
+            });
+            const done = el('button', 'zune-sync-btn zune-push-btn', 'done');
+            done.addEventListener('click', close);
+            actions.append(done, undo);
+            status.textContent = 'restored. the original is kept — “undo” here or “undo last fix” on the fix songs page puts it back. press “update zune” to put the new version on your zune.';
+        });
+        refresh();
+        document.body.appendChild(overlay);
+        preview.focus();
+    }
+
+    _qualityScanLabel() {
+        const btn = this.songsTable?.check;
+        if (!btn) return;
+        const qs = this.qualityScanState;
+        btn.textContent = qs?.running
+            ? `checking quality ${qs.done} of ${qs.total} \u2014 stop`
+            : (qs?.finished ? 'check quality again' : 'check for fake quality');
+    }
+
+    /** Measure songs that could be fake high quality (see audio-quality.js). */
+    async _qualityScanToggle() {
+        const qs = this.qualityScanState || (this.qualityScanState = {});
+        if (qs.running) { window.electronAPI.qualityScanStop(); return; }
+        const kbpsFrom = window.songFixerLogic.kbpsFrom;
+        const sizes = new Map(this.categorizedFiles.music.map(f => [f.path, f.size || 0]));
+        const items = [];
+        for (const [path, t] of this.musicLibrary.tracks) {
+            const kbps = kbpsFrom(sizes.get(path) || 0, t.duration || 0);
+            const format = (path.split('.').pop() || '').toLowerCase();
+            if (window.songFixerLogic.qualityNeedsMeasuring({ kbps, format })) items.push({ path, duration: t.duration || 0 });
+        }
+        Object.assign(qs, { running: true, done: 0, total: items.length, finished: false });
+        this._qualityScanLabel();
+        let redraw = null;
+        const refresh = () => {
+            if (redraw) return;
+            redraw = setTimeout(() => {
+                redraw = null;
+                const st = this.songsTable;
+                if (st && st.root.isConnected) this.renderMusicSongsTable(st.root.parentElement);
+            }, 2000);
+        };
+        const hr = window.electronAPI.onQualityResults((batch) => {
+            for (const [p, hz] of batch) this.musicLibrary.quality.set(p, hz);
+            refresh();
+        });
+        const hp = window.electronAPI.onQualityProgress((p) => { qs.done = p.done; qs.total = p.total; this._qualityScanLabel(); });
+        let res;
+        try { res = await window.electronAPI.qualityScan(items); } finally {
+            window.electronAPI.offQualityResults(hr);
+            window.electronAPI.offQualityProgress(hp);
+        }
+        qs.running = false;
+        qs.finished = true;
+        this._qualityScanLabel();
+        const st = this.songsTable;
+        if (st && st.root.isConnected) this.renderMusicSongsTable(st.root.parentElement);
+        const poor = this.songsTable?.rows.filter(r => r.q).length || 0;
+        this.showToast?.(res?.success
+            ? `${res.stopped ? 'quality check stopped' : 'quality check done'} \u2014 ${poor} song${poor === 1 ? '' : 's'} marked \u26A0 poor quality`
+            : 'quality check failed: ' + (res?.error || 'unknown error'));
     }
 
     renderMusicArtistsView(container) {

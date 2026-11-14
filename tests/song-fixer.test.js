@@ -389,3 +389,70 @@ test('websites come out of tags, and a website picture is removed and restored b
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('restore evens out volume and cleans up sound, keeps tags and art, and undo puts the original back', { skip: !haveFfmpeg && 'ffmpeg binary not installed' }, async () => {
+  const { SongFixer } = require('../src/main/song-fixer.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'songfixer-'));
+  try {
+    const art = path.join(dir, 'art.jpg');
+    execFileSync(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=c=blue:s=300x300:d=1', '-frames:v', '1', '-y', art]);
+    // Quiet tone with hiss
+    const song = path.join(dir, 'quiet.mp3');
+    execFileSync(ffmpegPath, ['-hide_banner', '-loglevel', 'error',
+      '-f', 'lavfi', '-i', 'sine=f=440:d=20,volume=0.03', '-f', 'lavfi', '-i', 'anoisesrc=d=20:c=white:a=0.004', '-i', art,
+      '-filter_complex', '[0][1]amix=inputs=2:normalize=0[a]', '-map', '[a]', '-map', '2:v', '-c:a', 'libmp3lame', '-b:a', '192k',
+      '-c:v', 'copy', '-disposition:v:0', 'attached_pic', '-id3v2_version', '3', '-metadata', 'title=Quiet Song', '-y', song]);
+    const original = fs.readFileSync(song);
+    const sf = new SongFixer({ ffmpegPath, dataDir: dir });
+    const level = (f) => {
+      const out = require('child_process').spawnSync(ffmpegPath, ['-hide_banner', '-i', f, '-af', 'volumedetect', '-f', 'null', '-'], { encoding: 'utf8' }).stderr;
+      return Number(out.match(/mean_volume: (-?[\d.]+) dB/)[1]);
+    };
+
+    const prev = await sf.restorePreview(song, { volume: true, hiss: true });
+    assert.ok(fs.existsSync(prev.original) && fs.existsSync(prev.restored));
+    assert.ok(level(prev.restored) > level(prev.original) + 10, 'preview is louder');
+
+    const before = level(song);
+    assert.deepEqual(await sf.restore('400', song, { volume: true, hiss: true, clicks: true, rumble: true }), { restored: true });
+    assert.ok(level(song) > before + 10, 'song is louder');
+    const tags = await sf.readTags(song);
+    assert.equal(tags.title, 'Quiet Song');
+    assert.equal(tags.hasCover, true);
+    assert.ok(Math.abs(tags.duration - 20) < 1);
+
+    const undo = await sf.undoLast();
+    assert.equal(undo.failed.length, 0);
+    assert.ok(fs.readFileSync(song).equals(original), 'original back exactly');
+    assert.deepEqual(fs.readdirSync(path.join(dir, 'song-fixer', 'originals')), []);
+    await assert.rejects(sf.restore('401', song, {}), /nothing chosen/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('quality scan measures and remembers how much of the sound a file has', { skip: !haveFfmpeg && 'ffmpeg binary not installed' }, async () => {
+  const { SongFixer } = require('../src/main/song-fixer.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'songfixer-'));
+  try {
+    const wav = path.join(dir, 'src.wav');
+    execFileSync(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'anoisesrc=d=30:c=pink:a=0.3', '-ac', '2', '-y', wav]);
+    const real = path.join(dir, 'real320.mp3');
+    const low = path.join(dir, 'low.mp3');
+    const fake = path.join(dir, 'fake320.mp3');
+    execFileSync(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-i', wav, '-c:a', 'libmp3lame', '-b:a', '320k', '-y', real]);
+    execFileSync(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-i', wav, '-c:a', 'libmp3lame', '-b:a', '128k', '-y', low]);
+    execFileSync(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-i', low, '-c:a', 'libmp3lame', '-b:a', '320k', '-y', fake]);
+    const sf = new SongFixer({ ffmpegPath, dataDir: dir });
+    const got = {};
+    await sf.qualityScan([{ path: real, duration: 30 }, { path: fake, duration: 30 }], { onResult: (p, hz) => { got[path.basename(p)] = hz; } });
+    const L = require('../src/shared/song-fixer-logic.js');
+    assert.equal(L.qualityVerdict({ kbps: 320, format: 'mp3', cutoffHz: got['real320.mp3'] }), null);
+    assert.equal(L.qualityVerdict({ kbps: 320, format: 'mp3', cutoffHz: got['fake320.mp3'] }).level, 'fake');
+    // Remembered for next time
+    const sf2 = new SongFixer({ ffmpegPath, dataDir: dir });
+    assert.deepEqual(Object.keys(await sf2.qualityKnown()).sort(), [fake, real].sort());
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

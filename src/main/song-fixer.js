@@ -442,6 +442,183 @@ class SongFixer {
     return { changed, renamedTo: res.renamedTo };
   }
 
+  // ---- Restoring sound (volume, hiss, clicks, rumble) -----------------------
+
+  /** Filters for the chosen fixes (loudness is added separately: it needs measuring). */
+  _restoreFilters(opts) {
+    const f = [];
+    if (opts.rumble) f.push('highpass=f=30');
+    if (opts.clicks) f.push('adeclick');
+    if (opts.hiss) f.push('afftdn=nr=10:nf=-50:tn=1');
+    return f;
+  }
+
+  _sampleRate(stderr) {
+    const m = String(stderr).match(/Audio:[^\n]*?(\d{4,6}) Hz/);
+    const sr = m ? Number(m[1]) : 44100;
+    return sr >= 8000 && sr <= 192000 ? sr : 44100;
+  }
+
+  _runFfmpeg(args) {
+    return new Promise((resolve, reject) => {
+      const proc = spawn(this.ffmpegPath, args);
+      let err = '';
+      proc.stderr.on('data', (c) => { err += c; if (err.length > 400000) err = err.slice(-200000); });
+      proc.on('error', reject);
+      proc.on('close', (code) => (code === 0 ? resolve(err) : reject(Object.assign(new Error(`ffmpeg failed (${code})`), { stderr: err }))));
+    });
+  }
+
+  /**
+   * The full filter chain for a file (or excerpt): the chosen fixes, then
+   * volume levelling measured on the same audio (two-pass loudnorm).
+   * @param input ffmpeg input args, e.g. ['-ss', '60', '-t', '30', '-i', file]
+   */
+  async _restoreChain(input, opts) {
+    const pre = this._restoreFilters(opts);
+    const info = await this._runFfmpeg(['-hide_banner', ...input, '-t', '0', '-f', 'null', '-']).catch(e => e.stderr || '');
+    const sr = this._sampleRate(info);
+    if (!opts.volume) return { chain: pre.length ? pre.join(',') : 'anull', sr };
+    const target = 'I=-14:TP=-1.0:LRA=11';
+    const out = await this._runFfmpeg(['-hide_banner', ...input, '-vn', '-af', [...pre, `loudnorm=${target}:print_format=json`].join(','), '-f', 'null', '-']);
+    const json = out.slice(out.lastIndexOf('{'), out.lastIndexOf('}') + 1);
+    let m;
+    try { m = JSON.parse(json); } catch { throw new Error('couldn\u2019t measure the volume'); }
+    const measured = `measured_I=${m.input_i}:measured_TP=${m.input_tp}:measured_LRA=${m.input_lra}:measured_thresh=${m.input_thresh}:offset=${m.target_offset}`;
+    return { chain: [...pre, `loudnorm=${target}:${measured}:linear=true`, `aresample=${sr}`].join(','), sr };
+  }
+
+  /**
+   * Short before/after clips (30 s, a third of the way in) to compare.
+   * @returns {{ original: string, restored: string }} paths of WAV files
+   */
+  async restorePreview(filePath, opts) {
+    const dir = path.join(require('os').tmpdir(), 'zune-restore-preview');
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+    await fs.mkdir(dir, { recursive: true });
+    let duration = 0;
+    try { duration = (await this.readTags(filePath)).duration || 0; } catch { /* unknown */ }
+    const start = duration > 60 ? Math.floor(duration / 3) : 0;
+    const input = ['-ss', String(start), '-t', '30', '-i', filePath];
+    const stamp = Date.now();
+    const original = path.join(dir, `original-${stamp}.wav`);
+    const restored = path.join(dir, `restored-${stamp}.wav`);
+    await this._runFfmpeg(['-hide_banner', '-loglevel', 'error', ...input, '-vn', '-c:a', 'pcm_s16le', '-y', original]);
+    const { chain } = await this._restoreChain(input, opts);
+    await this._runFfmpeg(['-hide_banner', '-loglevel', 'error', ...input, '-vn', '-af', chain, '-c:a', 'pcm_s16le', '-y', restored]);
+    return { original, restored };
+  }
+
+  /**
+   * Clean up a song's sound and save it in place. The original is kept in
+   * the undo folder, so "undo last fix" puts it back.
+   * @param opts { volume, hiss, clicks, rumble }
+   */
+  async restore(batchId, filePath, opts) {
+    if (!opts || !['volume', 'hiss', 'clicks', 'rumble'].some(k => opts[k])) throw new Error('nothing chosen to fix');
+    const ext = path.extname(filePath).toLowerCase();
+    const CODEC = {
+      '.mp3': ['-c:a', 'libmp3lame', '-q:a', '0'],
+      '.m4a': ['-c:a', 'aac', '-b:a', '256k'],
+      '.mp4': ['-c:a', 'aac', '-b:a', '256k'],
+      '.aac': ['-c:a', 'aac', '-b:a', '256k'],
+      '.flac': ['-c:a', 'flac'],
+      '.ogg': ['-c:a', 'libvorbis', '-q:a', '6'],
+      '.wav': ['-c:a', 'pcm_s16le'],
+      '.wma': ['-c:a', 'wmav2', '-b:a', '192k'],
+    }[ext];
+    if (!CODEC) throw new Error(`can\u2019t restore ${ext.replace('.', '').toUpperCase()} files`);
+    const current = await this.readTags(filePath);
+    const { chain } = await this._restoreChain(['-i', filePath], opts);
+    const dir = path.dirname(filePath);
+    const temp = path.join(dir, `.${path.basename(filePath, ext)}.zunerestore-${Date.now()}${ext}`);
+    const keepsArt = ['.mp3', '.m4a', '.mp4', '.flac'].includes(ext);
+    const args = ['-hide_banner', '-loglevel', 'error', '-i', filePath, '-map', '0:a:0'];
+    if (keepsArt) args.push('-map', '0:v?', '-c:v', 'copy');
+    args.push('-map_metadata', '0', '-af', chain, ...CODEC);
+    if (ext === '.mp3') args.push('-id3v2_version', '3', '-write_id3v1', '1');
+    if (keepsArt && ext !== '.mp3') args.push('-disposition:v', 'attached_pic');
+    args.push('-y', temp);
+    try {
+      await this._runFfmpeg(args);
+      const [a, b] = await Promise.all([this.decodedDuration(filePath), this.decodedDuration(temp)]);
+      if (!b || (a && Math.abs(a - b) > Math.max(1, a * 0.01))) throw new Error('restored file is a different length');
+      const backups = path.join(this.undoDir, 'originals');
+      await fs.mkdir(backups, { recursive: true });
+      const backupFile = path.join(backups, `${batchId}-${Date.now()}-${path.basename(filePath)}`);
+      await fs.copyFile(filePath, backupFile);
+      await fs.rename(temp, filePath);
+      await this._record(batchId, { path: filePath, before: {}, backupFile });
+      await this._addPending(filePath, current, { artChanged: true });
+      return { restored: true };
+    } catch (err) {
+      await fs.unlink(temp).catch(() => {});
+      const why = String(err.stderr || '').trim().split('\n').filter(Boolean).pop();
+      throw new Error(why ? `${err.message}: ${why}` : err.message);
+    }
+  }
+
+  // ---- Sound quality (fake bitrates) -----------------------------------------
+
+  _qualityFile() { return path.join(this.undoDir, 'quality.json'); }
+
+  async _readQuality() {
+    if (this._quality) return this._quality;
+    try { this._quality = JSON.parse(await fs.readFile(this._qualityFile(), 'utf8')); } catch { this._quality = {}; }
+    return this._quality;
+  }
+
+  async _saveQuality() {
+    await fs.mkdir(this.undoDir, { recursive: true });
+    await fs.writeFile(this._qualityFile(), JSON.stringify(this._quality || {}));
+  }
+
+  /** Measured cutoffs saved earlier: { path: cutoffHz } (only still-valid ones). */
+  async qualityKnown() {
+    const q = await this._readQuality();
+    const out = {};
+    for (const [p, v] of Object.entries(q)) if (v && v.cutoffHz) out[p] = v.cutoffHz;
+    return out;
+  }
+
+  /**
+   * Measure how much of the sound each song really has (see audio-quality.js).
+   * Results are kept until the file changes. Runs a few songs at a time.
+   * @param items [{ path, duration }]
+   * @param onResult (path, cutoffHz) for each measured song
+   * @param shouldStop () => boolean
+   */
+  async qualityScan(items, { onResult = () => {}, onProgress = () => {}, shouldStop = () => false } = {}) {
+    const { measureCutoff } = require('./audio-quality.js');
+    const q = await this._readQuality();
+    let next = 0;
+    let done = 0;
+    let lastSave = Date.now();
+    const worker = async () => {
+      while (next < items.length && !shouldStop()) {
+        const { path: p, duration } = items[next++];
+        try {
+          const st = await fs.stat(p);
+          const stamp = `${st.size}:${Math.round(st.mtimeMs)}`;
+          let entry = q[p];
+          if (!entry || entry.stamp !== stamp) {
+            const r = await measureCutoff(this.ffmpegPath, p, duration || 0);
+            entry = { stamp, cutoffHz: r ? r.cutoffHz : 0 };
+            q[p] = entry;
+          }
+          if (entry.cutoffHz) onResult(p, entry.cutoffHz);
+        } catch { /* missing or unreadable */ }
+        done++;
+        if (done % 20 === 0) onProgress(done, items.length);
+        if (Date.now() - lastSave > 15000) { lastSave = Date.now(); await this._saveQuality().catch(() => {}); }
+      }
+    };
+    await Promise.all([worker(), worker(), worker()]);
+    onProgress(done, items.length);
+    await this._saveQuality().catch(() => {});
+    return { measured: done, stopped: shouldStop() };
+  }
+
   // ---- Website pictures used as album art -----------------------------------
 
   /**
@@ -806,6 +983,14 @@ class SongFixer {
     for (const e of entries.reverse()) {
       try {
         if (!fsSync.existsSync(e.path)) throw new Error('file no longer exists');
+        if (e.backupFile) {
+          // Restored sound: put the original file back
+          if (!fsSync.existsSync(e.backupFile)) throw new Error('the original file is no longer saved');
+          await fs.copyFile(e.backupFile, e.path);
+          await fs.unlink(e.backupFile).catch(() => {});
+          restored.push(e.path);
+          continue;
+        }
         if (e.restoreCover && !fsSync.existsSync(e.restoreCover)) throw new Error('the removed picture is no longer saved');
         await this._rewrite(e.path, e.before, { dropCover: e.addedCover, coverPath: e.restoreCover || null });
         restored.push(e.path);

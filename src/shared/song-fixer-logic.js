@@ -914,6 +914,39 @@ const songFixerLogic = {
   groupSiteCovers,
 };
 
+// ---------------------------------------------------------------------------
+// Sound quality
+// ---------------------------------------------------------------------------
+
+const LOSSLESS_FORMATS = new Set(['flac', 'wav', 'aiff', 'aif']);
+
+/**
+ * Is this song poor quality? `kbps` is worked out from size and length (so
+ * it runs a little high when there's big album art); `cutoffHz` is the
+ * highest frequency with real content (from audio-quality.js), if measured.
+ * @returns {null | { level: 'low'|'fake', reason: string }}
+ */
+function qualityVerdict({ kbps = 0, format = '', cutoffHz = 0 } = {}) {
+  const fmt = String(format).toLowerCase().replace(/^\./, '');
+  const lossless = LOSSLESS_FORMATS.has(fmt) || (fmt === 'm4a' && kbps > 600);
+  if (lossless) {
+    if (cutoffHz && cutoffHz < 19500) return { level: 'fake', reason: 'lossless file made from an MP3 \u2014 sounds like the MP3 it came from' };
+    return null;
+  }
+  if (cutoffHz && cutoffHz < 15000) return { level: 'low', reason: `very muffled \u2014 the sound stops at ${(cutoffHz / 1000).toFixed(1)} kHz` };
+  if (kbps > 0 && kbps < 150) return { level: 'low', reason: `low quality (${kbps} kbps) \u2014 can sound swishy or muffled; a 256\u2013320 kbps copy is better` };
+  if (cutoffHz && kbps >= 250 && cutoffHz < 18000) return { level: 'fake', reason: `not really ${kbps} kbps \u2014 made from a ~128 kbps copy (sound stops at ${(cutoffHz / 1000).toFixed(1)} kHz)` };
+  if (cutoffHz && kbps >= 180 && cutoffHz < 16500) return { level: 'fake', reason: `not really ${kbps} kbps \u2014 made from a lower quality copy (sound stops at ${(cutoffHz / 1000).toFixed(1)} kHz)` };
+  return null;
+}
+
+/** Songs whose cutoff is worth measuring: everything not already flagged by bitrate. */
+function qualityNeedsMeasuring({ kbps = 0, format = '' } = {}) {
+  return !qualityVerdict({ kbps, format });
+}
+songFixerLogic.qualityVerdict = qualityVerdict;
+songFixerLogic.qualityNeedsMeasuring = qualityNeedsMeasuring;
+
 // What kind of audio a file holds, from its first bytes (Buffer or
 // Uint8Array of at least 12 bytes): '.mp3', '.wma', … or null
 function sniffAudioExt(buf) {

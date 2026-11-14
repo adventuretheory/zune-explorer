@@ -4421,7 +4421,7 @@ body.platform-linux .now-playing-panel {
 .songs-table-count { font-size: 12px; color: var(--zune-text-dim); }
 .songs-table-row {
   display: grid; align-items: center;
-  grid-template-columns: 40px minmax(160px, 2.2fr) 56px minmax(120px, 1.4fr) minmax(120px, 1.6fr) minmax(70px, 0.9fr) 48px 72px 44px;
+  grid-template-columns: 40px minmax(160px, 2.2fr) 56px minmax(120px, 1.4fr) minmax(120px, 1.6fr) minmax(70px, 0.9fr) 48px 90px 62px 44px;
   column-gap: 12px; padding: 0 8px; box-sizing: border-box;
   font-size: 13px; color: #ddd; border-bottom: 1px solid rgba(255,255,255,0.04);
 }
@@ -4475,3 +4475,37 @@ body.zune-panel-open .content-area { padding-right: 372px; }
 .song-fixer-cover-text { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .song-fixer-cover-ex { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .song-fixer-cover-text .zune-diff-meta { white-space: normal; }
+
+/* Songs table: sound quality and restore */
+.songs-table-cell.col-kbps.quality-warn { color: #ffd23f; font-weight: 600; cursor: help; }
+.songs-table-poor-btn, .songs-table-check-btn { background: none; border: 1px solid #333; color: #bbb; font-size: 12px; padding: 4px 10px; border-radius: 3px; cursor: pointer; white-space: nowrap; }
+.songs-table-poor-btn { color: #ffd23f; border-color: rgba(255, 210, 63, 0.4); }
+.songs-table-poor-btn.active { background: rgba(255, 210, 63, 0.15); }
+.songs-table-poor-btn:hover, .songs-table-check-btn:hover { color: #fff; border-color: #666; }
+.song-restore-btn { background: none; border: 1px solid #333; color: #999; font-size: 11px; padding: 2px 6px; border-radius: 3px; cursor: pointer; }
+.song-restore-btn:hover { color: #fff; border-color: var(--zune-accent, #ff6900); }
+.songs-table-body .songs-table-row:not(:hover) .song-restore-btn { opacity: 0.45; }
+
+/* Restore sound dialog */
+.restore-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 5000; display: flex; align-items: center; justify-content: center; }
+.restore-dialog { position: relative; background: #111; border: 1px solid #2a2a2a; border-radius: 8px; padding: 24px 28px; width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 64px); overflow-y: auto; color: #ddd; box-sizing: border-box; }
+.restore-close { position: absolute; top: 12px; right: 14px; background: none; border: none; color: #888; font-size: 16px; cursor: pointer; }
+.restore-close:hover { color: #fff; }
+.restore-title { font-size: 28px; font-weight: 300; color: #fff; }
+.restore-song { font-size: 14px; color: #aaa; margin: 2px 0 14px; }
+.restore-warn { font-size: 13px; color: #ffd23f; background: rgba(255,210,63,0.08); border-left: 3px solid #ffd23f; padding: 8px 10px; margin-bottom: 14px; line-height: 1.45; }
+.restore-options { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
+.restore-option { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
+.restore-option input { margin-top: 3px; accent-color: var(--zune-accent, #ff6900); }
+.restore-option-label { font-size: 15px; color: #fff; }
+.restore-option-help { font-size: 12px; color: #888; }
+.restore-actions { display: flex; gap: 18px; align-items: center; }
+.restore-compare { display: flex; gap: 10px; margin-top: 14px; }
+.restore-ab { background: none; border: 1px solid #333; color: #bbb; padding: 6px 14px; border-radius: 3px; cursor: pointer; font-size: 13px; }
+.restore-ab.active { border-color: var(--zune-accent, #ff6900); color: #fff; }
+.restore-status { font-size: 13px; color: #aaa; margin-top: 12px; min-height: 18px; line-height: 1.45; }
+
+/* Remove one song from the Zune */
+.zune-diff-remove { margin-left: auto; flex: none; background: none; border: 1px solid #333; color: #999; font-size: 11px; padding: 3px 8px; border-radius: 3px; cursor: pointer; }
+.zune-diff-remove:hover { color: #fff; border-color: #e0245e; }
+.vs-row:not(:hover) > .zune-diff-remove { opacity: 0.4; }

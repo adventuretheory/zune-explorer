@@ -863,6 +863,31 @@ ipcMain.handle('zune-pull-check', async (event, destDir, items) => {
   return { conflicts };
 });
 
+// Removing one song from the Zune. Returns 'remove' | 'copy' | 'cancel'.
+ipcMain.handle('zune-remove-ask', async (event, name, localPath) => {
+  const song = String(name || 'this song').slice(0, 200);
+  if (typeof localPath === 'string' && localPath) {
+    const { response } = await dialog.showMessageBox(mainWindow, {
+      type: 'question',
+      buttons: ['Remove from Zune', 'Cancel'],
+      defaultId: 0,
+      cancelId: 1,
+      message: `Remove \u201c${song}\u201d from your Zune?`,
+      detail: `It stays on your computer:\n${localPath}`,
+    });
+    return response === 0 ? 'remove' : 'cancel';
+  }
+  const { response } = await dialog.showMessageBox(mainWindow, {
+    type: 'warning',
+    buttons: ['Copy to Computer, Then Remove', 'Remove Without Copying', 'Cancel'],
+    defaultId: 0,
+    cancelId: 2,
+    message: `\u201c${song}\u201d isn\u2019t on your computer`,
+    detail: 'If you remove it from the Zune now, you won\u2019t have a copy anywhere. Copy it to your computer first? It\u2019s only removed from the Zune once the copy has worked.',
+  });
+  return ['copy', 'remove', 'cancel'][response] || 'cancel';
+});
+
 // Ask once what to do with name clashes. Returns 'skip' | 'keep' | 'replace' | 'cancel'.
 ipcMain.handle('zune-pull-ask-conflicts', async (event, conflicts) => {
   const list = Array.isArray(conflicts) ? conflicts : [];
@@ -1366,6 +1391,51 @@ ipcMain.handle('song-fixer-remove-cover', async (event, batchId, filePath, hash)
     return { success: false, error: error.message };
   }
 });
+
+// Restoring sound: before/after clips, and the real thing
+const restoreOpts = (o) => ({ volume: !!o?.volume, hiss: !!o?.hiss, clicks: !!o?.clicks, rumble: !!o?.rumble });
+ipcMain.handle('song-fixer-restore-preview', async (event, filePath, opts) => {
+  try {
+    if (typeof filePath !== 'string' || !isAllowedPath(filePath)) throw new Error('Path not allowed');
+    return { success: true, ...(await songFixer.restorePreview(filePath, restoreOpts(opts))) };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+ipcMain.handle('song-fixer-restore', async (event, batchId, filePath, opts) => {
+  try {
+    if (!/^\d+$/.test(String(batchId))) throw new Error('Bad batch id');
+    if (typeof filePath !== 'string' || !isAllowedPath(filePath)) throw new Error('Path not allowed');
+    return { success: true, ...(await songFixer.restore(String(batchId), filePath, restoreOpts(opts))) };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+// Sound quality: measured cutoffs (fake 320s), saved between runs
+let qualityStop = false;
+ipcMain.handle('quality-known', async () => songFixer.qualityKnown());
+ipcMain.handle('quality-scan', async (event, items) => {
+  try {
+    if (!Array.isArray(items)) throw new Error('Bad request');
+    const ok = items.filter(i => i && typeof i.path === 'string' && isAllowedPath(i.path))
+      .map(i => ({ path: i.path, duration: Number(i.duration) || 0 }));
+    qualityStop = false;
+    const send = (ch, data) => { if (!event.sender.isDestroyed()) event.sender.send(ch, data); };
+    let batch = [];
+    const flush = () => { if (batch.length) { send('quality-results', batch); batch = []; } };
+    const r = await songFixer.qualityScan(ok, {
+      onResult: (p, cutoffHz) => { batch.push([p, cutoffHz]); if (batch.length >= 25) flush(); },
+      onProgress: (done, total) => { flush(); send('quality-progress', { done, total }); },
+      shouldStop: () => qualityStop,
+    });
+    flush();
+    return { success: true, ...r };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+ipcMain.handle('quality-scan-stop', async () => { qualityStop = true; });
 
 ipcMain.handle('pick-image', async () => {
   const r = await dialog.showOpenDialog(mainWindow, {
