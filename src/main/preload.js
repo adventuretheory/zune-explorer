@@ -37,6 +37,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   zuneDeleteObjects: (handles) => ipcRenderer.invoke('zune-delete-objects', handles),
   zuneRetag: (edits) => ipcRenderer.invoke('zune-retag', edits),
   lyricsGet: (info) => ipcRenderer.invoke('lyrics-get', info),
+  zunePreviewFile: (handle) => ipcRenderer.invoke('zune-preview-file', handle),
   zuneSavePlaylist: (name, trackHandles, replaceHandle) => ipcRenderer.invoke('zune-save-playlist', name, trackHandles, replaceHandle),
   zuneRemoveAsk: (name, localPath, counts) => ipcRenderer.invoke('zune-remove-ask', name, localPath, counts),
   zuneEject: () => ipcRenderer.invoke('zune-eject'),

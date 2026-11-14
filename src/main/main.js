@@ -655,6 +655,31 @@ ipcMain.handle('lyrics-get', async (event, info) => {
   }
 });
 
+// Play a song that's only on the Zune: copy it to a small cache and play that
+ipcMain.handle('zune-preview-file', async (event, handle) => {
+  try {
+    if (!Number.isInteger(handle)) throw new Error('Bad request');
+    const dir = path.join(app.getPath('userData'), 'zune-preview');
+    await fs.mkdir(dir, { recursive: true });
+    const existing = (await fs.readdir(dir)).find(n => n.startsWith(`${handle}.`));
+    if (existing) return { success: true, path: path.join(dir, existing) };
+    const data = await zuneManager.getFile(handle);
+    if (!data || !data.length) throw new Error('the zune sent an empty file');
+    const out = path.join(dir, `${handle}${sniffAudioExt(data) || '.mp3'}`);
+    await fs.writeFile(out, data);
+    // Keep the cache small: the 10 most recent
+    const names = await fs.readdir(dir);
+    if (names.length > 10) {
+      const st = await Promise.all(names.map(async n => ({ n, t: (await fs.stat(path.join(dir, n))).mtimeMs })));
+      st.sort((a, b) => b.t - a.t);
+      for (const { n } of st.slice(10)) await fs.unlink(path.join(dir, n)).catch(() => {});
+    }
+    return { success: true, path: out };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
 // Playlists on the Zune: create, or update one with the same name
 ipcMain.handle('zune-save-playlist', async (event, name, trackHandles, replaceHandle) => {
   try {

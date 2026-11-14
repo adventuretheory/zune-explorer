@@ -3338,6 +3338,7 @@ class ZuneExplorer {
         this.audioPlayer.on('trackchange', (data) => this.onTrackChange(data));
         // Now Playing → lyrics
         if (window.LyricsPanel) this.lyricsPanel = new window.LyricsPanel(this);
+        this._setupScrollTop();
         this.audioPlayer.on('trackchange', ({ index }) => {
             this.nowPlaying.currentIndex = index;
             this.saveNowPlaying();
@@ -6430,6 +6431,34 @@ class ZuneExplorer {
             // Read the Zune again so lists and the "on" column show them
             if (sent) zp._rescanDevice?.();
         }
+    }
+
+    /**
+     * A "back to top" button for long pages and lists: shows once whatever is
+     * being scrolled (the page, the songs table, a Zune list) is well down.
+     */
+    _setupScrollTop() {
+        const btn = document.createElement('button');
+        btn.className = 'scroll-top-btn';
+        btn.title = 'back to the top';
+        btn.textContent = '\u2191';
+        document.body.appendChild(btn);
+        let target = null;
+        document.addEventListener('scroll', (e) => {
+            const el = e.target === document ? document.scrollingElement : e.target;
+            if (!el || !el.classList || el.closest?.('.np-lyrics, .restore-dialog, .now-playing-panel')) return;
+            if (el.scrollHeight < el.clientHeight * 2.5) return; // not a long list
+            target = el;
+            btn.classList.toggle('show', el.scrollTop > Math.max(600, el.clientHeight));
+        }, true);
+        btn.addEventListener('click', () => {
+            if (target?.isConnected) target.scrollTo({ top: 0, behavior: 'smooth' });
+            btn.classList.remove('show');
+        });
+        // Moving to another page: the old list is gone, so is the button
+        setInterval(() => {
+            if (btn.classList.contains('show') && (!target || !target.isConnected || target.offsetParent === null)) btn.classList.remove('show');
+        }, 1000);
     }
 
     /** Fresh Zune list + "which songs are on it", after something changed on the Zune. */

@@ -56,7 +56,8 @@ class ZuneStorageView {
     const bd = zp?.browseData || {};
     const zm = this.explorer._zuneMembership;
     const onComputer = new Set();
-    if (zm && !zm.none) for (const h of zm.onZune.values()) onComputer.add(h);
+    const localOf = new Map(); // handle -> this computer's copy
+    if (zm && !zm.none) for (const [p, h] of zm.onZune) { onComputer.add(h); localOf.set(h, p); }
     const tidy = (v) => (window.songFixerLogic ? window.songFixerLogic.cleanTagText(v) : v) || '';
     const secs = (d) => (d > 36000 ? d / 1000 : d) || 0;
     const out = [];
@@ -67,6 +68,7 @@ class ZuneStorageView {
         title: tidy(d.title) || d.title || d.filename || '?', artist: tidy(d.artist) || '', album: tidy(d.album) || '',
         duration: sec, kbps: d.size && sec >= 1 ? Math.round(d.size * 8 / sec / 1000) : 0,
         onComputer: zm && !zm.none ? onComputer.has(d.handle) : null,
+        localPath: localOf.get(d.handle) || null,
       };
     });
     add('videos', bd.videos, d => ({ title: d.title || d.filename || '?', artist: '', album: '', duration: secs(d.duration), kbps: 0, onComputer: null }));
@@ -196,7 +198,12 @@ class ZuneStorageView {
       });
     }
     this.selBar = zsEl('div', 'songs-table-selbar zs-selbar');
-    c.appendChild(this.selBar);
+    // Search, filters, selection bar and column headers stay at the top while scrolling
+    const sticky = zsEl('div', 'zs-sticky');
+    c.insertBefore(sticky, controls);
+    sticky.append(controls, this.selBar);
+    this.headEl = zsEl('div', 'zs-headwrap');
+    sticky.appendChild(this.headEl);
     this.listEl = zsEl('div', 'zs-list');
     c.appendChild(this.listEl);
     this._drawList();
@@ -206,7 +213,7 @@ class ZuneStorageView {
 
   _cols() {
     if (this.group === 'items') {
-      return [['title', 'title'], ['artist', 'artist'], ['album', 'album'], ['cat', 'type'], ['duration', 'time'], ['kbps', 'quality'], ['size', 'size'], ['on', 'on']];
+      return [['play', ''], ['title', 'title'], ['artist', 'artist'], ['album', 'album'], ['cat', 'type'], ['duration', 'time'], ['kbps', 'quality'], ['size', 'size'], ['on', 'on']];
     }
     return this.group === 'albums'
       ? [['title', 'album'], ['artist', 'artist'], ['count', 'items'], ['duration', 'time'], ['size', 'size'], ['on', 'on']]
@@ -253,19 +260,22 @@ class ZuneStorageView {
     const list = this.listEl;
     if (!list) return;
     list.innerHTML = '';
+    if (this.headEl) this.headEl.innerHTML = '';
+    const top = this.headEl || list;
     const rows = this._visible();
     this.rows = rows;
     const cols = this._cols();
     const total = rows.reduce((s, r) => s + r.size, 0);
     const k2 = this.sortKey2 && this.sortKey2 !== this.sortKey ? this.sortKey2 : null;
     const name = (k) => (cols.find(c => c[0] === k) || [k, k])[1];
-    list.appendChild(zsEl('div', 'zs-count', `${rows.length} ${this.group === 'items' ? 'item' : this.group === 'albums' ? 'album' : 'artist'}${rows.length === 1 ? '' : 's'} · ${zsSize(total)}` +
+    top.appendChild(zsEl('div', 'zs-count', `${rows.length} ${this.group === 'items' ? 'item' : this.group === 'albums' ? 'album' : 'artist'}${rows.length === 1 ? '' : 's'} · ${zsSize(total)}` +
       (k2 ? ` · by ${name(this.sortKey)}, then ${name(k2)}` : '')));
 
     // Column headers: click to sort, shift-click to sort within
     const head = zsEl('div', 'zs-trow zs-thead zs-' + this.group);
     for (const [k, label] of cols) {
       const h = zsEl('div', 'zs-cell zs-c-' + k + (k === this.sortKey || k === k2 ? ' sorted' : ''));
+      if (k === 'play') { head.appendChild(h); continue; }
       const arrow = (d) => (d > 0 ? ' ▴' : ' ▾');
       h.textContent = label + (k === this.sortKey ? arrow(this.sortDir) + (k2 ? '1' : '') : k === k2 ? arrow(this.sortDir2) + '2' : '');
       h.title = 'click to sort · shift-click to also sort by this';
@@ -279,7 +289,7 @@ class ZuneStorageView {
       });
       head.appendChild(h);
     }
-    list.appendChild(head);
+    top.appendChild(head);
 
     const body = zsEl('div', 'zs-tbody');
     const shown = rows.slice(0, this.limit);
@@ -289,6 +299,16 @@ class ZuneStorageView {
       if (this.selected.has(row.dataset.key)) row.classList.add('selected');
       for (const [k] of cols) {
         const c = zsEl('div', 'zs-cell zs-c-' + k);
+        if (k === 'play') {
+          if (!r.group && r.cat === 'music') {
+            const b = zsEl('button', 'song-play-btn zs-play', '\u25B6');
+            b.title = r.localPath ? 'play (your computer\u2019s copy)' : 'play (copied from the zune first)';
+            b.dataset.key = this._rowKey(r);
+            c.appendChild(b);
+          }
+          row.appendChild(c);
+          continue;
+        }
         if (k === 'title') c.textContent = r.title;
         else if (k === 'artist') c.textContent = r.artist || '';
         else if (k === 'album') c.textContent = r.album || '';
@@ -314,6 +334,16 @@ class ZuneStorageView {
       const row = e.target.closest('.zs-trow');
       if (!row) return;
       const key = row.dataset.key;
+      const rowData = shown.find(r => this._rowKey(r) === key);
+      // Play button, or double-click / double-tap a song
+      if (e.target.closest('.zs-play') || (e.detail >= 2 && !e.shiftKey && !e.metaKey && !e.ctrlKey)) {
+        if (rowData && !rowData.group && rowData.cat === 'music') this._play(rowData);
+        if (e.target.closest('.zs-play')) {
+          if (!this.selected.has(key)) { this.selected = new Set([key]); this.anchor = key; this._paintSelection(); }
+          return;
+        }
+        return;
+      }
       const keys = shown.map(r => this._rowKey(r));
       if (e.shiftKey && this.anchor) {
         const a = keys.indexOf(this.anchor), b = keys.indexOf(key);
@@ -338,6 +368,21 @@ class ZuneStorageView {
       list.appendChild(more);
     }
     this._drawSelBar();
+  }
+
+  /** Play a Zune song: this computer's copy if there is one, else copied off the Zune. */
+  async _play(r) {
+    const ex = this.explorer;
+    let p = r.localPath;
+    if (!p) {
+      ex.showToast?.(`getting \u201c${r.title}\u201d from your zune\u2026`);
+      const res = await window.electronAPI.zunePreviewFile(r.handle);
+      if (!res.success) { ex.showToast?.('couldn\u2019t play it: ' + res.error); return; }
+      p = res.path;
+    }
+    const file = { path: p, name: r.title, title: r.title, artist: r.artist, album: r.album };
+    if (r.localPath && ex.playPath) ex.playPath(p);
+    else ex.audioPlayer.play(file, [file]);
   }
 
   async _remove(items) {
