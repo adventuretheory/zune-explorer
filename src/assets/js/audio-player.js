@@ -4,7 +4,13 @@ class AudioPlayer {
     this.queue = [];
     this.currentIndex = -1;
     this.isPlaying = false;
-    this.shuffle = false;
+    // Shuffle plays every song in the queue once, in random order, before
+    // any repeats; "previous" goes back through what was actually played.
+    let savedShuffle = false;
+    try { savedShuffle = localStorage.getItem('player-shuffle') === '1'; } catch { /* not saved */ }
+    this.shuffle = savedShuffle;
+    this._shufflePlayed = new Set();
+    this._shuffleHistory = [];
     this.repeat = 'none'; // 'none', 'all', 'one'
     this.currentMetadata = null;
     this._listeners = {};
@@ -48,12 +54,20 @@ class AudioPlayer {
 
   async play(file, queue) {
     this.queue = queue || [file];
+    this._shufflePlayed = new Set();
+    this._shuffleHistory = [];
     this.currentIndex = this.queue.findIndex(f => (f.id && f.id === file.id) || f.path === file.path);
     if (this.currentIndex === -1) this.currentIndex = 0;
     await this.loadAndPlay(this.queue[this.currentIndex]);
   }
 
   async loadAndPlay(file) {
+    // Remember what has played, for shuffle's no-repeat order and "previous"
+    if (this.currentIndex >= 0) {
+      this._shufflePlayed.add(this.currentIndex);
+      if (this._shuffleHistory[this._shuffleHistory.length - 1] !== this.currentIndex) this._shuffleHistory.push(this.currentIndex);
+      if (this._shuffleHistory.length > 1000) this._shuffleHistory.splice(0, this._shuffleHistory.length - 1000);
+    }
     try {
       if (file.isPodcast) {
         // Podcast episode — metadata is inline, no IPC needed
@@ -83,19 +97,36 @@ class AudioPlayer {
           });
         }
       } else {
-        // Music track — existing behavior
+        // Music track
         const metadata = await window.electronAPI.getAudioMetadata(file.path);
         this.currentMetadata = metadata;
-        this.audio.src = window.pathUtils.toFileUrl(file.path);
+        let src = file.path;
+        // Windows Media can't be played directly: play a converted copy
+        if (/\.(wma|asf)$/i.test(file.path) && window.electronAPI.getPlayablePath) {
+          this.emit('converting', { file });
+          const r = await window.electronAPI.getPlayablePath(file.path);
+          if (!r.success) {
+            const err = new Error(r.drm
+              ? `\u201c${file.title || file.name || 'this song'}\u201d is copy-protected (Zune Pass / DRM) \u2014 it only plays on your zune`
+              : `couldn\u2019t play this WMA file: ${r.error}`);
+            err.friendly = true;
+            throw err;
+          }
+          src = r.path;
+        }
+        this.audio.src = window.pathUtils.toFileUrl(src);
       }
       await this.audio.play();
+      this._failStreak = 0;
       this.isPlaying = true;
       this.emit('trackchange', { file, metadata: this.currentMetadata, index: this.currentIndex, queue: this.queue });
       this.emit('play');
     } catch (error) {
       console.error('Error loading track:', error);
       let message;
-      if (file.isPodcast) {
+      if (error && error.friendly) {
+        message = error.message;
+      } else if (file.isPodcast) {
         const type = file.enclosureType || 'audio';
         message = file.localPath
           ? `unable to play downloaded episode`
@@ -113,6 +144,12 @@ class AudioPlayer {
       }
       this.isPlaying = false;
       this.emit('playbackerror', { file, message });
+      // Skip to the next song rather than stopping (but not forever if nothing plays)
+      this._failStreak = (this._failStreak || 0) + 1;
+      if (!file.isPodcast && this.queue.length > 1 && this._failStreak < 5) {
+        const at = this.currentIndex;
+        setTimeout(() => { if (this.currentIndex === at && !this.isPlaying) this.next(); }, 1200);
+      }
     }
   }
 
@@ -141,13 +178,19 @@ class AudioPlayer {
 
     let nextIndex;
     if (this.shuffle) {
-      if (this.queue.length <= 1) {
-        nextIndex = 0;
-      } else {
-        do {
-          nextIndex = Math.floor(Math.random() * this.queue.length);
-        } while (nextIndex === this.currentIndex);
+      const unplayed = () => {
+        const list = [];
+        for (let i = 0; i < this.queue.length; i++) if (!this._shufflePlayed.has(i) && i !== this.currentIndex) list.push(i);
+        return list;
+      };
+      let left = unplayed();
+      if (left.length === 0 && this.repeat === 'all' && this.queue.length > 0) {
+        // Everything has played: start a new random round
+        this._shufflePlayed = new Set([this.currentIndex]);
+        left = unplayed();
+        if (left.length === 0) left = [this.currentIndex];
       }
+      nextIndex = left.length ? left[Math.floor(Math.random() * left.length)] : this.queue.length;
     } else {
       nextIndex = this.currentIndex + 1;
     }
@@ -175,6 +218,17 @@ class AudioPlayer {
       return;
     }
 
+    // Shuffle: back to the song that played before this one
+    if (this.shuffle && this._shuffleHistory.length > 1) {
+      if (this._shuffleHistory[this._shuffleHistory.length - 1] === this.currentIndex) this._shuffleHistory.pop();
+      const back = this._shuffleHistory.pop();
+      if (back != null && back < this.queue.length) {
+        this.currentIndex = back;
+        await this.loadAndPlay(this.queue[this.currentIndex]);
+        return;
+      }
+    }
+
     let prevIndex = this.currentIndex - 1;
     if (prevIndex < 0) {
       if (this.repeat === 'all') {
@@ -195,7 +249,15 @@ class AudioPlayer {
   }
 
   toggleShuffle() {
-    this.shuffle = !this.shuffle;
+    this.setShuffle(!this.shuffle);
+  }
+
+  setShuffle(on) {
+    this.shuffle = !!on;
+    // A fresh round from the current song
+    this._shufflePlayed = new Set(this.currentIndex >= 0 ? [this.currentIndex] : []);
+    this._shuffleHistory = this.currentIndex >= 0 ? [this.currentIndex] : [];
+    try { localStorage.setItem('player-shuffle', this.shuffle ? '1' : '0'); } catch { /* per-session only */ }
     this.emit('shufflechange', this.shuffle);
   }
 

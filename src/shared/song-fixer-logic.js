@@ -824,7 +824,10 @@ const SORT_OPTIONS = [
 
 /** kbps from size (bytes) and duration (seconds); 0 if unknown. */
 function kbpsFrom(size, durationSec) {
-  return size > 0 && durationSec > 0 ? Math.round((size * 8) / durationSec / 1000) : 0;
+  // A length under a second is a broken header, not a real song length
+  if (!(size > 0) || !(durationSec >= 1)) return 0;
+  const kbps = Math.round((size * 8) / durationSec / 1000);
+  return kbps > 5000 ? 0 : kbps;
 }
 
 /**

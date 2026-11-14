@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getExternalVolumes: () => ipcRenderer.invoke('get-external-volumes'),
   scanApplications: () => ipcRenderer.invoke('scan-applications'),
   getAudioMetadata: (path) => ipcRenderer.invoke('get-audio-metadata', path),
+  getPlayablePath: (filePath) => ipcRenderer.invoke('get-playable-path', filePath),
   batchScanAudioMetadata: (paths, options) => ipcRenderer.invoke('batch-scan-audio-metadata', paths, options),
   onMusicScanProgress: (callback) => {
     const handler = (_event, data) => callback(data);

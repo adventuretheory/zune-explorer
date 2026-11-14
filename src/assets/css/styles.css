@@ -4509,3 +4509,21 @@ body.zune-panel-open .content-area { padding-right: 372px; }
 .zune-diff-remove { margin-left: auto; flex: none; background: none; border: 1px solid #333; color: #999; font-size: 11px; padding: 3px 8px; border-radius: 3px; cursor: pointer; }
 .zune-diff-remove:hover { color: #fff; border-color: #e0245e; }
 .vs-row:not(:hover) > .zune-diff-remove { opacity: 0.4; }
+
+/* Shuffle in the bottom player bar */
+.player-btn.player-bar-shuffle.active { color: var(--zune-orange, #ff6900); }
+
+/* Songs table: selection and shuffle */
+.songs-table-root:focus { outline: none; }
+.songs-table-body .songs-table-row { cursor: default; user-select: none; }
+.songs-table-body .songs-table-row.selected { background: rgba(255, 105, 0, 0.18); }
+.songs-table-body .songs-table-row.selected:hover { background: rgba(255, 105, 0, 0.24); }
+.songs-table-shuffle-btn { background: none; border: 1px solid #333; color: #ddd; font-size: 12px; padding: 4px 10px; border-radius: 3px; cursor: pointer; white-space: nowrap; }
+.songs-table-shuffle-btn:hover { border-color: var(--zune-accent, #ff6900); color: #fff; }
+.songs-table-selbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 8px; margin-bottom: 6px; background: rgba(255, 105, 0, 0.08); border-radius: 4px; }
+.songs-table-selcount { color: var(--zune-accent, #ff6900); font-size: 13px; margin-right: 6px; }
+.songs-table-selbtn { background: none; border: 1px solid #3a3a3a; color: #ddd; font-size: 12px; padding: 4px 10px; border-radius: 3px; cursor: pointer; }
+.songs-table-selbtn:hover { color: #fff; border-color: #777; }
+.songs-table-selbtn.danger { color: #ff6b8b; border-color: rgba(255, 107, 139, 0.4); }
+.songs-table-selbtn.dim { color: #999; }
+.songs-table-selhint { font-size: 11px; color: #777; margin-left: auto; }

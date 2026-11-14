@@ -376,6 +376,70 @@ ipcMain.handle('get-audio-metadata', async (event, filePath) => {
   }
 });
 
+// ASF content encryption objects (DRM): "Content Encryption" and
+// "Extended Content Encryption", as stored in the file (little-endian GUIDs)
+const ASF_DRM_GUIDS = [
+  Buffer.from('FBB31122 23BDD211 B4B700AA 00A9C114'.replace(/ /g, ''), 'hex'),
+  Buffer.from('14E68A29 2226174C B935DAE0 7EE9289C'.replace(/ /g, ''), 'hex'),
+];
+async function isDrmProtectedAsf(filePath) {
+  let fh;
+  try {
+    fh = await fs.open(filePath, 'r');
+    const buf = Buffer.alloc(256 * 1024);
+    const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+    const head = buf.subarray(0, bytesRead);
+    return ASF_DRM_GUIDS.some(g => head.indexOf(g) !== -1);
+  } catch {
+    return false;
+  } finally {
+    await fh?.close().catch(() => {});
+  }
+}
+
+// Formats the built-in player can't play (Windows Media): converted once to a
+// cached M4A and played from there. Copy-protected files can't be converted.
+const NEEDS_PLAYBACK_CONVERSION = new Set(['.wma', '.asf']);
+const playbackConversions = new Map(); // cache path -> Promise
+ipcMain.handle('get-playable-path', async (event, filePath) => {
+  try {
+    if (typeof filePath !== 'string' || !isAllowedPath(filePath)) throw new Error('Path not allowed');
+    if (!NEEDS_PLAYBACK_CONVERSION.has(path.extname(filePath).toLowerCase())) return { success: true, path: filePath };
+    if (await isDrmProtectedAsf(filePath)) return { success: false, drm: true, error: 'copy-protected (DRM)' };
+    const st = await fs.stat(filePath);
+    const key = require('crypto').createHash('sha1').update(`${filePath}|${st.size}|${st.mtimeMs}`).digest('hex');
+    const dir = path.join(app.getPath('userData'), 'playback-cache');
+    const out = path.join(dir, key + '.m4a');
+    try { await fs.access(out); return { success: true, path: out, converted: true }; } catch { /* not converted yet */ }
+    if (!playbackConversions.has(out)) {
+      playbackConversions.set(out, (async () => {
+        await fs.mkdir(dir, { recursive: true });
+        const tmp = out + '.part.m4a';
+        await new Promise((resolve, reject) => {
+          const { spawn } = require('child_process');
+          const proc = spawn(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-i', filePath, '-vn', '-c:a', 'aac', '-b:a', '256k', '-y', tmp]);
+          let err = '';
+          proc.stderr.on('data', (c) => { err += c; });
+          proc.on('error', reject);
+          proc.on('close', (code) => (code === 0 ? resolve() : reject(new Error(/drm/i.test(err) ? 'copy-protected (DRM)' : (err.trim().split('\n').pop() || 'conversion failed')))));
+        });
+        await fs.rename(tmp, out);
+        // Keep the cache small: the 40 most recently converted songs
+        const names = (await fs.readdir(dir)).filter(n => n.endsWith('.m4a') && !n.includes('.part'));
+        if (names.length > 40) {
+          const stats = await Promise.all(names.map(async n => ({ n, t: (await fs.stat(path.join(dir, n))).mtimeMs })));
+          stats.sort((a, b) => b.t - a.t);
+          for (const { n } of stats.slice(40)) await fs.unlink(path.join(dir, n)).catch(() => {});
+        }
+      })().finally(() => playbackConversions.delete(out)));
+    }
+    await playbackConversions.get(out);
+    return { success: true, path: out, converted: true };
+  } catch (error) {
+    return { success: false, drm: /DRM/.test(error.message), error: error.message };
+  }
+});
+
 ipcMain.handle('batch-scan-audio-metadata', async (event, filePaths, options = {}) => {
   const { batchSize = 15, includeArt = true } = options;
   const validPaths = filePaths.filter(fp => isAllowedPath(fp));
@@ -401,8 +465,11 @@ ipcMain.handle('batch-scan-audio-metadata', async (event, filePaths, options = {
           trackNumber: (metadata.common.track && metadata.common.track.no) || 0,
           year: metadata.common.year || 0,
           duration: metadata.format.duration || 0,
+          bitrate: metadata.format.bitrate ? Math.round(metadata.format.bitrate / 1000) : 0, // kbps
           albumArt: null
         };
+        // Copy-protected Windows Media (Zune Pass, old stores) can't be played here
+        if (/\.(wma|asf)$/i.test(filePath) && await isDrmProtectedAsf(filePath)) result.drm = true;
         if (includeArt && metadata.common.picture && metadata.common.picture.length > 0) {
           const pic = metadata.common.picture[0];
           result.albumArt = `data:${pic.format};base64,${Buffer.from(pic.data).toString('base64')}`;

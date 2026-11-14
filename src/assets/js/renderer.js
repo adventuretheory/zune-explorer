@@ -3159,6 +3159,14 @@ class ZuneExplorer {
         document.getElementById('np-play').addEventListener('click', () => this.audioPlayer.togglePlayPause());
         document.getElementById('np-next').addEventListener('click', () => this.audioPlayer.next());
         document.getElementById('np-shuffle').addEventListener('click', () => this.audioPlayer.toggleShuffle());
+        document.getElementById('player-bar-shuffle')?.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.audioPlayer.toggleShuffle();
+            this.showToast?.(this.audioPlayer.shuffle ? 'shuffle on' : 'shuffle off');
+        });
+        // Shuffle is remembered between runs: show it from the start
+        document.getElementById('np-shuffle').classList.toggle('active', this.audioPlayer.shuffle);
+        document.getElementById('player-bar-shuffle')?.classList.toggle('active', this.audioPlayer.shuffle);
         document.getElementById('np-repeat').addEventListener('click', () => this.audioPlayer.toggleRepeat());
 
         // Now Playing progress seek
@@ -3184,6 +3192,7 @@ class ZuneExplorer {
         this.audioPlayer.on('timeupdate', (data) => this.onTimeUpdate(data));
         this.audioPlayer.on('shufflechange', (active) => {
             document.getElementById('np-shuffle').classList.toggle('active', active);
+            document.getElementById('player-bar-shuffle')?.classList.toggle('active', active);
         });
         this.audioPlayer.on('repeatchange', (mode) => {
             const btn = document.getElementById('np-repeat');
@@ -5658,11 +5667,16 @@ class ZuneExplorer {
             const dur = t.duration || 0;
             allRows.push({
                 path, title: t.title || '', artist: t.artist || '', album: t.album || '', genre: t.genre || '',
-                year: t.year || 0, duration: dur, kbps: kbpsFrom(sizes.get(path) || 0, dur),
+                year: t.year || 0, duration: dur,
+                // The file's own bitrate when known (WMA and VBR files), else from size and length
+                kbps: (t.bitrate > 0 && t.bitrate < 5000 ? t.bitrate : 0) || kbpsFrom(sizes.get(path) || 0, dur),
                 format: (path.split('.').pop() || '').toLowerCase(),
+                drm: !!t.drm,
             });
             const r = allRows[allRows.length - 1];
-            r.q = verdict({ kbps: r.kbps, format: r.format, cutoffHz: this.musicLibrary.quality.get(path) || 0 });
+            r.q = r.drm
+                ? { level: 'drm', reason: 'copy-protected (Zune Pass / DRM): it only plays on the zune \u2014 it can\u2019t be played, converted or restored here' }
+                : verdict({ kbps: r.kbps, format: r.format, cutoffHz: this.musicLibrary.quality.get(path) || 0 });
         }
 
         if (!st) {
@@ -5685,8 +5699,18 @@ class ZuneExplorer {
             check.className = 'songs-table-check-btn';
             check.title = 'listens to a short part of each song to find files that claim high quality but were made from a low quality copy';
             check.addEventListener('click', () => this._qualityScanToggle());
-            top.append(search, count, poor, check);
+            const shuffle = document.createElement('button');
+            shuffle.className = 'songs-table-shuffle-btn';
+            shuffle.textContent = '\u2928 shuffle';
+            shuffle.title = 'play these songs (or the selected ones) in random order';
+            top.append(search, count, shuffle, poor, check);
+
+            // Shown when songs are selected (click, \u2318-click, shift-click, \u2318A)
+            const selbar = document.createElement('div');
+            selbar.className = 'songs-table-selbar';
+            selbar.style.display = 'none';
             root.appendChild(top);
+            root.appendChild(selbar);
 
             const head = document.createElement('div');
             head.className = 'songs-table-row songs-table-head';
@@ -5697,7 +5721,25 @@ class ZuneExplorer {
             root.appendChild(body);
             container.appendChild(root);
 
-            const state = { root, head, body, search, count, poor, check, rows: [], view: [], sortKey: 'title', sortDir: 1, query: '', poorOnly: false };
+            const state = { root, head, body, search, count, poor, check, selbar, rows: [], view: [], sortKey: 'title', sortDir: 1, query: '', poorOnly: false,
+                selected: new Set(), anchor: null };
+            shuffle.addEventListener('click', () => this._songsTableShuffle());
+            root.tabIndex = -1; // so \u2318A / Delete / Esc reach the table
+            root.addEventListener('keydown', (e) => {
+                if (e.target.closest('input, textarea')) return;
+                if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'a') {
+                    e.preventDefault(); e.stopPropagation();
+                    state.selected = new Set(state.view.map(r => r.path));
+                    this._songsTableSelChanged();
+                } else if (e.key === 'Escape' && state.selected.size) {
+                    e.preventDefault(); e.stopPropagation();
+                    state.selected.clear();
+                    this._songsTableSelChanged();
+                } else if ((e.key === 'Backspace' || e.key === 'Delete') && state.selected.size) {
+                    e.preventDefault(); e.stopPropagation();
+                    this.trashSongs([...state.selected]);
+                }
+            });
             poor.addEventListener('click', () => { state.poorOnly = !state.poorOnly; this._songsTableUpdate(false); });
             this.songsTable = state;
 
@@ -5710,14 +5752,20 @@ class ZuneExplorer {
                     const r = entry.data;
                     el.dataset.trackPath = r.path;
                     el.draggable = true;
+                    el.classList.toggle('selected', !!self.songsTable && self.songsTable.selected.has(r.path));
                     for (const [key] of COLS) {
                         const cell = document.createElement('div');
                         cell.className = 'songs-table-cell col-' + key;
                         if (key === 'play') cell.appendChild(self._songPlayButton(r.path));
                         else if (key === 'duration') cell.textContent = r.duration ? self.formatDuration(r.duration) : '';
                         else if (key === 'kbps') {
-                            cell.textContent = (r.q ? '\u26A0 ' : '') + (r.kbps ? r.kbps + ' kbps' : '');
-                            if (r.q) cell.classList.add('quality-warn');
+                            if (r.drm) {
+                                cell.textContent = '\uD83D\uDD12 protected';
+                                cell.classList.add('quality-warn');
+                            } else {
+                                cell.textContent = (r.q ? '\u26A0 ' : '') + (r.kbps ? r.kbps + ' kbps' : '');
+                                if (r.q) cell.classList.add('quality-warn');
+                            }
                         } else if (key === 'restore') {
                             const b = document.createElement('button');
                             b.className = 'song-restore-btn';
@@ -5748,7 +5796,29 @@ class ZuneExplorer {
                 const rb = e.target.closest('.song-restore-btn');
                 if (rb) { e.stopPropagation(); this.openRestoreDialog(rb.dataset.path); return; }
                 const btn = e.target.closest('.song-play-btn');
-                if (!btn) return;
+                if (!btn) {
+                    // Selecting: click = just this one, \u2318/ctrl-click = add or remove, shift-click = range
+                    const row = e.target.closest('.vs-row');
+                    if (!row || !row.dataset.trackPath) return;
+                    const p = row.dataset.trackPath;
+                    if (e.shiftKey && state.anchor) {
+                        const a = state.view.findIndex(x => x.path === state.anchor);
+                        const b = state.view.findIndex(x => x.path === p);
+                        if (a !== -1 && b !== -1) {
+                            if (!(e.metaKey || e.ctrlKey)) state.selected.clear();
+                            for (let i = Math.min(a, b); i <= Math.max(a, b); i++) state.selected.add(state.view[i].path);
+                        }
+                    } else if (e.metaKey || e.ctrlKey) {
+                        if (state.selected.has(p)) state.selected.delete(p); else state.selected.add(p);
+                        state.anchor = p;
+                    } else {
+                        state.selected = new Set([p]);
+                        state.anchor = p;
+                    }
+                    root.focus({ preventScroll: true });
+                    this._songsTableSelChanged();
+                    return;
+                }
                 e.stopPropagation();
                 const r = state.view.find(x => x.path === btn.dataset.path);
                 if (r) this._songRowPlay(r, state.view);
@@ -5762,13 +5832,21 @@ class ZuneExplorer {
             body.addEventListener('contextmenu', (e) => {
                 const row = e.target.closest('.vs-row');
                 if (!row) return;
-                const t = this.musicLibrary.tracks.get(row.dataset.trackPath);
-                if (t) this.showMusicItemContextMenu(e, [this.getTrackFile({ ...t, path: row.dataset.trackPath })]);
+                // Right-click on a selected song acts on the whole selection
+                const p = row.dataset.trackPath;
+                if (!state.selected.has(p)) { state.selected = new Set([p]); state.anchor = p; this._songsTableSelChanged(); }
+                const files = [...state.selected].map(x => {
+                    const t = this.musicLibrary.tracks.get(x);
+                    return t ? this.getTrackFile({ ...t, path: x }) : null;
+                }).filter(Boolean);
+                if (files.length) this.showMusicItemContextMenu(e, files);
             });
             body.addEventListener('dragstart', (e) => {
                 const row = e.target.closest('.vs-row');
                 if (!row) return;
-                e.dataTransfer.setData('application/x-zune-paths', JSON.stringify([row.dataset.trackPath]));
+                const p = row.dataset.trackPath;
+                const paths = state.selected.has(p) ? [...state.selected] : [p];
+                e.dataTransfer.setData('application/x-zune-paths', JSON.stringify(paths));
                 e.dataTransfer.effectAllowed = 'copy';
             });
             state.COLS = COLS;
@@ -5802,6 +5880,12 @@ class ZuneExplorer {
             return c || coll.compare(a.title, b.title);
         });
         st.view = view;
+        // Songs that left the library (trashed, moved) drop out of the selection
+        if (st.selected.size) {
+            const have = new Set(st.rows.map(r => r.path));
+            for (const p of [...st.selected]) if (!have.has(p)) st.selected.delete(p);
+        }
+        this._songsTableSelBar();
 
         // Header with the active column marked
         while (st.head.firstChild) st.head.removeChild(st.head.firstChild);
@@ -5961,6 +6045,70 @@ class ZuneExplorer {
         refresh();
         document.body.appendChild(overlay);
         preview.focus();
+    }
+
+    _songsTableSelChanged() {
+        const st = this.songsTable;
+        if (!st) return;
+        st.scroller.refresh();
+        this._songsTableSelBar();
+    }
+
+    /** The bar above the table for the selected songs: play, shuffle, playlist, trash. */
+    _songsTableSelBar() {
+        const st = this.songsTable;
+        if (!st) return;
+        const bar = st.selbar;
+        const n = st.selected.size;
+        bar.style.display = n ? '' : 'none';
+        while (bar.firstChild) bar.removeChild(bar.firstChild);
+        if (!n) return;
+        const files = () => st.view.filter(r => st.selected.has(r.path)).map(r => {
+            const t = this.musicLibrary.tracks.get(r.path);
+            return this.getTrackFile({ ...(t || {}), path: r.path });
+        });
+        const label = document.createElement('span');
+        label.className = 'songs-table-selcount';
+        label.textContent = `${n} selected`;
+        bar.appendChild(label);
+        const btn = (text, title, fn, cls = '') => {
+            const b = document.createElement('button');
+            b.className = 'songs-table-selbtn ' + cls;
+            b.textContent = text;
+            b.title = title;
+            b.addEventListener('click', fn);
+            bar.appendChild(b);
+            return b;
+        };
+        btn('\u25B6 play', 'play the selected songs in order', () => {
+            const sel = st.view.filter(r => st.selected.has(r.path));
+            if (!sel.length) return;
+            if (this.audioPlayer.shuffle) this.audioPlayer.setShuffle(false);
+            this._songRowPlay(sel[0], sel);
+        });
+        btn('\u2928 shuffle', 'play the selected songs in random order', () => this._songsTableShuffle());
+        btn('+ add to playlist', 'add the selected songs to a playlist', (e) => this.showDynamicContextMenu(e, this.buildPlaylistSubmenuItems(files())));
+        btn('add to now playing', 'add to the end of what\u2019s playing', () => { this.addToNowPlaying(files()); this.showToast?.(`added ${n} song${n === 1 ? '' : 's'} to now playing`); });
+        btn('move to trash', 'move the selected songs to the Trash (their zune copies are removed on \u201cupdate zune\u201d)', () => this.trashSongs([...st.selected]), 'danger');
+        btn('clear', 'deselect (Esc)', () => { st.selected.clear(); this._songsTableSelChanged(); }, 'dim');
+        const hint = document.createElement('span');
+        hint.className = 'songs-table-selhint';
+        hint.textContent = '\u2318-click to add or remove, shift-click for a range, \u2318A for all';
+        bar.appendChild(hint);
+    }
+
+    /** Shuffle-play the selected songs, or every song shown. */
+    _songsTableShuffle() {
+        const st = this.songsTable;
+        if (!st) return;
+        const list = st.selected.size ? st.view.filter(r => st.selected.has(r.path)) : st.view;
+        if (!list.length) return;
+        const first = list[Math.floor(Math.random() * list.length)];
+        const byPath = new Map(this.categorizedFiles.music.map(f => [f.path, f]));
+        const toFile = (t) => byPath.get(t.path) || { path: t.path, name: t.title, extension: '.' + (t.path.split('.').pop() || 'mp3') };
+        if (!this.audioPlayer.shuffle) this.audioPlayer.setShuffle(true);
+        this.playWithNowPlaying(toFile(first), list.map(toFile));
+        this.showToast?.(`shuffling ${list.length} song${list.length === 1 ? '' : 's'}`);
     }
 
     _qualityScanLabel() {
