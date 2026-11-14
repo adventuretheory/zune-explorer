@@ -71,3 +71,28 @@ test('a reply header split across packets is reassembled', async () => {
   assert.equal(c.type, 3);
   assert.equal(c.code, 0x2001);
 });
+
+test('sending a file whose size is an exact multiple of 512 bytes ends with a zero-length packet', async () => {
+  const run = async (size) => {
+    const writes = [];
+    const mtp = new MtpProtocol({
+      async bulkWrite(b) { writes.push(b.length); },
+      async bulkRead() { return container(3, 0x2001, mtp.transactionId); },
+    });
+    await mtp.sendObject(Buffer.alloc(size));
+    return writes;
+  };
+  // 1024 bytes of data: header (12) goes alone, then 1024 = two full packets -> needs the empty packet
+  assert.equal((await run(1024)).at(-1), 0);
+  // 1000 bytes: ends on a short packet, nothing extra
+  assert.notEqual((await run(1000)).at(-1), 0);
+  // 1012 + 12 = 1024 (the old rule): still sent, as before
+  assert.equal((await run(1012)).at(-1), 0);
+});
+
+test('property data that is an exact multiple of 512 bytes ends with a zero-length packet', async () => {
+  const writes = [];
+  const mtp = new MtpProtocol({ async bulkWrite(b) { writes.push(b.length); }, async bulkRead() { return container(3, 0x2001, mtp.transactionId); } });
+  await mtp.sendData(0x9804, Buffer.alloc(2048));
+  assert.deepEqual(writes, [12, 2048, 0]);
+});

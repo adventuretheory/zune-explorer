@@ -20,6 +20,12 @@ const ResponseCodeName = Object.fromEntries(
 );
 
 const DATA_CHUNK_SIZE = 16384;
+const USB_PACKET_SIZE = 512;
+
+/** A data transfer ending exactly on a full USB packet needs a zero-length packet after it. */
+function needsZlp(length) {
+  return length > 0 && length % USB_PACKET_SIZE === 0;
+}
 
 class MtpProtocol {
   constructor(transport) {
@@ -97,6 +103,8 @@ class MtpProtocol {
 
     await this.transport.bulkWrite(header);
     await this.transport.bulkWrite(data);
+    // Same rule as sendObject (e.g. album art that's an exact multiple of 512 bytes)
+    if (needsZlp(data.length)) await this.transport.bulkWrite(Buffer.alloc(0));
   }
 
   async receiveData() {
@@ -288,8 +296,13 @@ class MtpProtocol {
       }
     }
 
-    // Send zero-length packet if total transfer size is a multiple of 512
-    if (totalLength % 512 === 0) {
+    // End the data phase with a zero-length packet when it ends on a full
+    // 512-byte packet. The header goes out as its own (short) transfer, so
+    // what matters is the file data's length: a file that's an exact
+    // multiple of 512 bytes otherwise leaves the Zune waiting for more and
+    // the confirmation never comes. (The old check, on header + data, is
+    // kept: that extra empty packet never caused trouble.)
+    if (needsZlp(fileData.length) || totalLength % 512 === 0) {
       await this.transport.bulkWrite(Buffer.alloc(0));
     }
 

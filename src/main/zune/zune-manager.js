@@ -91,6 +91,7 @@ class ZuneManager extends EventEmitter {
       console.log('ZuneManager: USB device opened, starting MTP...');
 
       this.mtp = new MtpProtocol(this.transport);
+      this._refusedProps = null; // a new connection may be a different Zune
       await this.mtp.openSession(1);
       console.log('ZuneManager: MTP session opened');
 
@@ -244,8 +245,12 @@ class ZuneManager extends EventEmitter {
       [ObjectProperty.Duration, metadata.duration, 'uint32'],
     ];
 
+    if (!this._refusedProps) this._refusedProps = new Set();
     for (const [propCode, value, type] of props) {
       if (value == null) continue;
+      // The Zune refuses some properties on songs (album name, album artist,
+      // release date live on the album): don't ask again for every song
+      if (this._refusedProps.has(propCode)) continue;
       try {
         if (type === 'string') {
           await this.mtp.setObjectPropString(objectHandle, propCode, String(value));
@@ -255,7 +260,12 @@ class ZuneManager extends EventEmitter {
           await this.mtp.setObjectPropUint16(objectHandle, propCode, value & 0xFFFF);
         }
       } catch (err) {
-        console.log(`ZuneManager: could not set property 0x${propCode.toString(16)}: ${err.message}`);
+        if (/0x200f|0xa801|Access_Denied|Invalid_ObjectPropCode/i.test(err.message)) {
+          this._refusedProps.add(propCode);
+          console.log(`ZuneManager: the zune doesn't take property 0x${propCode.toString(16)} on songs (it's kept on the album) \u2014 not sending it again`);
+        } else {
+          console.log(`ZuneManager: could not set property 0x${propCode.toString(16)}: ${err.message}`);
+        }
       }
     }
   }
@@ -403,6 +413,7 @@ class ZuneManager extends EventEmitter {
               const sendName = path.basename(filePath, ext) + (needsConvert ? '.mp3' : path.extname(filePath));
               const fileData = await fs.readFile(sendPath);
               const totalBytes = fileData.length;
+              console.log(`ZuneManager: sending ${sendName} (${totalBytes} bytes${totalBytes % 512 === 0 ? ', exact multiple of 512' : ''})`);
 
               this.emit('transfer-progress', {
                 state: 'sending',
@@ -1670,7 +1681,14 @@ class ZuneManager extends EventEmitter {
           const set = async (h) => {
             for (const [field, value] of Object.entries(changes || {})) {
               if (!PROPS[field]) continue;
-              await this.mtp.setObjectPropString(h, PROPS[field], String(value ?? ''));
+              try {
+                await this.mtp.setObjectPropString(h, PROPS[field], String(value ?? ''));
+              } catch (err) {
+                // The Zune keeps album name / album artist on the album, not the
+                // song, and refuses them here; the album entry is fixed below
+                if ((field === 'album' || field === 'albumArtist') && /0x200f|0xa801|Access_Denied|Invalid_ObjectPropCode/i.test(err.message)) continue;
+                throw err;
+              }
             }
           };
           try {
