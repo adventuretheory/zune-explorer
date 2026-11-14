@@ -4607,3 +4607,8 @@ body.zune-panel-open .content-area { padding-right: 372px; }
 .zs-ok { color: #8fd18f; }
 .zs-some { color: #b9a46a; }
 .zs-only { color: #ff9a4d; }
+
+/* Selection bar keeps its place when empty */
+.songs-table-selbar { min-height: 30px; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+.songs-table-selbar.empty { background: transparent; }
+.songs-table-selbar.empty .songs-table-selhint { margin-left: 0; }

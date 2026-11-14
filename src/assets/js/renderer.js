@@ -835,6 +835,9 @@ class ZuneSyncPanel {
             this.browseData = result.contents;
             this._normalizeBrowseData();
             this.browseAlbumArtMap = result.contents.albumArtMap || {};
+            // A fresh read of the Zune: the songs table's "on" column follows
+            this.explorer._zuneMembership = null;
+            this.explorer._songsTableRefreshSoon?.(100);
 
             // Save to cache
             if (this.deviceKey) {
@@ -2751,6 +2754,9 @@ class ZuneSyncPanel {
             this._updateStorage(result.storage);
             if (this.lastStatus) this.lastStatus.storage = result.storage; // free space shown elsewhere
         }
+        // The songs table's "on" column and Zune filters follow straight away
+        this.explorer._zuneMembership = null;
+        this.explorer._songsTableRefreshSoon?.(100);
         if (this.browseData) {
             const failed = new Set((result.errors || []).map(e => e.handle));
             const gone = new Set(handles.filter(h => !failed.has(h)));
@@ -6008,6 +6014,12 @@ class ZuneExplorer {
                     const row = e.target.closest('.vs-row');
                     if (!row || !row.dataset.trackPath) return;
                     const p = row.dataset.trackPath;
+                    // Double-click / double-tap plays it
+                    if (e.detail >= 2 && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
+                        const r = state.view.find(x => x.path === p);
+                        if (r && !r.zuneOnly) this._songRowPlay(r, state.view.filter(x => !x.zuneOnly));
+                        return;
+                    }
                     if (e.shiftKey && state.anchor) {
                         const a = state.view.findIndex(x => x.path === state.anchor);
                         const b = state.view.findIndex(x => x.path === p);
@@ -6028,14 +6040,17 @@ class ZuneExplorer {
                 }
                 e.stopPropagation();
                 const r = state.view.find(x => x.path === btn.dataset.path);
-                if (r) this._songRowPlay(r, state.view);
+                if (r) {
+                    // Playing a song selects it too (unless it's part of a selection already)
+                    if (!state.selected.has(r.path)) {
+                        state.selected = new Set([r.path]);
+                        state.anchor = r.path;
+                        this._songsTableSelChanged();
+                    }
+                    this._songRowPlay(r, state.view.filter(x => !x.zuneOnly));
+                }
             });
-            body.addEventListener('dblclick', (e) => {
-                const row = e.target.closest('.vs-row');
-                if (!row || e.target.closest('.song-play-btn')) return;
-                const r = state.view.find(x => x.path === row.dataset.trackPath);
-                if (r && !r.zuneOnly) this._songRowPlay(r, state.view.filter(x => !x.zuneOnly));
-            });
+            // (double-click is handled in the click handler above, via the click count)
             body.addEventListener('contextmenu', (e) => {
                 const row = e.target.closest('.vs-row');
                 if (!row) return;
@@ -6277,7 +6292,10 @@ class ZuneExplorer {
     _songsTableSelChanged() {
         const st = this.songsTable;
         if (!st) return;
-        st.scroller.refresh();
+        // Just move the highlight: redrawing the rows would swallow a double-click
+        for (const row of st.body.querySelectorAll('.vs-row')) {
+            row.classList.toggle('selected', st.selected.has(row.dataset.trackPath));
+        }
         this._songsTableSelBar();
     }
 
@@ -6287,9 +6305,18 @@ class ZuneExplorer {
         if (!st) return;
         const bar = st.selbar;
         const n = st.selected.size;
-        bar.style.display = n ? '' : 'none';
+        // Always there (so the table never jumps when a song gets selected,
+        // which would put the second tap of a double-tap on another row)
+        bar.style.display = '';
+        bar.classList.toggle('empty', !n);
         while (bar.firstChild) bar.removeChild(bar.firstChild);
-        if (!n) return;
+        if (!n) {
+            const tip = document.createElement('span');
+            tip.className = 'songs-table-selhint';
+            tip.textContent = 'click a song to select it \u00b7 double-click to play \u00b7 \u2318-click to add more, shift-click for a range, \u2318A for all';
+            bar.appendChild(tip);
+            return;
+        }
         const files = () => st.view.filter(r => st.selected.has(r.path) && !r.zuneOnly).map(r => {
             const t = this.musicLibrary.tracks.get(r.path);
             return this.getTrackFile({ ...(t || {}), path: r.path });
