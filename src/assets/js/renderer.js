@@ -4412,8 +4412,10 @@ class ZuneExplorer {
     }
 
     showMusicItemContextMenu(e, tracks, extraItems = []) {
+        const sendPaths = tracks.map(t => t.path).filter(Boolean);
         const items = [
             { label: 'Add to Now Playing', action: () => this.addToNowPlaying(tracks) },
+            { label: sendPaths.length === 1 ? 'Send to Zune' : `Send ${sendPaths.length} Songs to Zune`, action: () => this.sendToZune(sendPaths) },
             { separator: true },
             ...this.buildPlaylistSubmenuItems(tracks),
         ];
@@ -6286,6 +6288,7 @@ class ZuneExplorer {
         if (anyLocal) btn('\u2928 shuffle', 'play the selected songs in random order', () => this._songsTableShuffle());
         if (anyLocal) btn('+ add to playlist', 'add the selected songs to a playlist', (e) => this.showDynamicContextMenu(e, this.buildPlaylistSubmenuItems(files())));
         if (anyLocal) btn('add to now playing', 'add to the end of what\u2019s playing', () => { this.addToNowPlaying(files()); this.showToast?.(`added ${n} song${n === 1 ? '' : 's'} to now playing`); });
+        if (anyLocal) btn('send to zune', 'copy the selected songs onto your zune', () => this.sendToZune([...st.selected].filter(p => !p.startsWith('zune:'))));
         if (anyLocal) btn('burn to cd', 'make an audio cd of the selected songs', () => this.openCdBurn([...st.selected].filter(p => !p.startsWith('zune:'))));
         for (const z of this._songsTableZuneActions()) btn(z.label.toLowerCase(), z.title || '', z.action);
         const localSel = [...st.selected].filter(p => !p.startsWith('zune:'));
@@ -6310,6 +6313,67 @@ class ZuneExplorer {
                 if (n) this.showToast?.(`${n} new song${n === 1 ? '' : 's'} in ${folders.length === 1 ? folders[0].split(/[/\\]/).pop() : 'your import folders'} \u2014 settings \u2192 import new music to bring ${n === 1 ? 'it' : 'them'} in`);
             } catch { /* just a hint */ }
         }, 4000);
+    }
+
+    /**
+     * Send songs to the Zune from anywhere in the library. Songs already on
+     * it are skipped; while a transfer is running, more songs wait in line
+     * and go when it's done.
+     */
+    async sendToZune(paths) {
+        const zp = this.zunePanel;
+        if (!zp || zp.state !== 'connected') {
+            this.showToast?.('connect your zune first, then send again');
+            return;
+        }
+        const zm = this._zuneMembership;
+        const queue = this._zuneSendQueue || (this._zuneSendQueue = []);
+        const queued = new Set(queue);
+        let already = 0;
+        for (const p of paths) {
+            if (zm && !zm.none && zm.onZune.has(p)) { already++; continue; }
+            if (!queued.has(p)) { queue.push(p); queued.add(p); }
+        }
+        const name = (p) => this.musicLibrary.tracks.get(p)?.title || p.split(/[/\\]/).pop();
+        if (!queue.length) {
+            this.showToast?.(already === 1 ? `\u201c${name(paths[0])}\u201d is already on your zune` : `those ${already} songs are already on your zune`);
+            return;
+        }
+        if (this._zuneSending) {
+            this.showToast?.(`added to the zune queue (${queue.length} waiting)`);
+            return;
+        }
+        this._zuneSending = true;
+        let sent = 0, failed = 0;
+        try {
+            while (queue.length) {
+                const batch = queue.splice(0, queue.length);
+                this.showToast?.(batch.length === 1 ? `sending \u201c${name(batch[0])}\u201d to your zune\u2026` : `sending ${batch.length} songs to your zune\u2026`);
+                const r = await window.electronAPI.zuneSendFiles(batch);
+                if (!r.success) {
+                    // Busy with another transfer (e.g. a sync started from the panel): wait, then try again
+                    if (/in progress|busy/i.test(r.error || '')) {
+                        queue.unshift(...batch);
+                        await new Promise(res => setTimeout(res, 5000));
+                        if (zp.state !== 'connected') break;
+                        continue;
+                    }
+                    failed += batch.length;
+                    this.showToast?.('couldn\u2019t send to the zune: ' + r.error);
+                    break;
+                }
+                sent += (r.succeeded || []).length;
+                failed += batch.length - (r.succeeded || []).length;
+            }
+        } finally {
+            this._zuneSending = false;
+        }
+        if (sent || failed) {
+            this.showToast?.(`${sent} song${sent === 1 ? '' : 's'} sent to your zune` +
+                (already ? `, ${already} already there` : '') + (failed ? `, ${failed} didn\u2019t go` : ''));
+            // Read the Zune again so lists and the "on" column show them
+            if (sent) zp._rescanDevice?.();
+        }
     }
 
     /** Settings → cds → burn, with these songs ready to go. */
