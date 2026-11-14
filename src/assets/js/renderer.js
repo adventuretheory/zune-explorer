@@ -1593,12 +1593,18 @@ class ZuneSyncPanel {
     _renderDiffSummary() {
         if (!this.diffResult) return;
 
-        document.getElementById('zune-diff-matched').textContent =
-            this.diffResult.matched.length + ' matched';
-        document.getElementById('zune-diff-local-only').textContent =
-            this.diffResult.localOnly.length + ' to sync';
-        document.getElementById('zune-diff-device-only').textContent =
-            this.diffResult.deviceOnly.length + ' on device only';
+        // Plain words: how many are on the Zune in total, and what's only on one side
+        const { matched, localOnly, deviceOnly } = this.diffResult;
+        const onZune = matched.length + deviceOnly.length;
+        const m = document.getElementById('zune-diff-matched');
+        m.textContent = `${onZune} on zune`;
+        m.title = `${matched.length} of them are also on your computer`;
+        const l = document.getElementById('zune-diff-local-only');
+        l.textContent = `${localOnly.length} only on computer`;
+        l.title = 'on your computer but not on the zune \u2014 tick them under \u201cmissing from device\u201d to send them';
+        const d = document.getElementById('zune-diff-device-only');
+        d.textContent = `${deviceOnly.length} only on zune`;
+        d.title = 'on the zune but not on your computer \u2014 see \u201cmissing from computer\u201d to copy them over';
         this._refreshFixedButton();
     }
 
