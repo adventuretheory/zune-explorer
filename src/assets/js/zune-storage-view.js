@@ -29,7 +29,11 @@ class ZuneStorageView {
     this.explorer = explorer;
     this.cat = 'all';       // all | music | videos | pictures | podcasts
     this.group = 'items';   // items | albums | artists
-    this.sort = 'largest';  // largest | smallest | longest | shortest | lowest | name
+    this.sortKey = 'size';  // column: title | artist | album | cat | duration | kbps | size | on | count
+    this.sortDir = -1;      // largest first
+    this.sortKey2 = null;   // shift-click: second column
+    this.sortDir2 = 1;
+    this.anchor = null;     // for shift-click ranges
     this.query = '';
     this.onlyZune = false;  // songs only on the zune
     this.selected = new Set();
@@ -98,15 +102,16 @@ class ZuneStorageView {
       };
       list = [...groups.values()].map(g => ({ ...g, count: g.items.length, onComputer: where(g.items) }));
     }
-    const by = {
-      largest: (a, b) => b.size - a.size,
-      smallest: (a, b) => (a.size || Infinity) - (b.size || Infinity),
-      longest: (a, b) => b.duration - a.duration,
-      shortest: (a, b) => (a.duration || Infinity) - (b.duration || Infinity),
-      lowest: (a, b) => (a.kbps || Infinity) - (b.kbps || Infinity),
-      name: (a, b) => String(a.title).localeCompare(String(b.title)),
-    }[this.sort] || ((a, b) => b.size - a.size);
-    return list.sort((a, b) => by(a, b) || String(a.title).localeCompare(String(b.title)));
+    const ON = { false: 1, some: 2, true: 3 }; // only on zune first
+    const val = (r, k) => (k === 'on' ? (r.onComputer == null ? 0 : ON[String(r.onComputer)]) : r[k]);
+    const coll = this._coll || (this._coll = new Intl.Collator(undefined, { sensitivity: 'base', numeric: true }));
+    const cmp = (a, b, k, d) => {
+      const va = val(a, k), vb = val(b, k);
+      if (!va !== !vb) return va ? -1 : 1; // unknown / empty last
+      return typeof va === 'number' || typeof vb === 'number' ? ((va || 0) - (vb || 0)) * d : coll.compare(String(va || ''), String(vb || '')) * d;
+    };
+    const k2 = this.sortKey2 && this.sortKey2 !== this.sortKey ? this.sortKey2 : null;
+    return list.sort((a, b) => cmp(a, b, this.sortKey, this.sortDir) || (k2 ? cmp(a, b, k2, this.sortDir2) : 0) || coll.compare(String(a.title), String(b.title)));
   }
 
   _handlesOf(row) { return row.group ? row.items.map(i => i.handle) : [row.handle]; }
@@ -156,8 +161,14 @@ class ZuneStorageView {
     };
     controls.append(search,
       select([['all', 'everything'], ['music', 'music'], ['videos', 'videos'], ['pictures', 'pictures'], ['podcasts', 'podcasts']], this.cat, v => { this.cat = v; }),
-      select([['items', 'each item'], ['albums', 'by album'], ['artists', 'by artist']], this.group, v => { this.group = v; }),
-      select([['largest', 'largest first'], ['smallest', 'smallest first'], ['longest', 'longest first'], ['shortest', 'shortest first'], ['lowest', 'lowest quality first'], ['name', 'name (a–z)']], this.sort, v => { this.sort = v; }));
+      select([['items', 'each item'], ['albums', 'by album'], ['artists', 'by artist']], this.group, v => {
+        this.group = v;
+        this.selected.clear();
+        // Columns differ between items and groups
+        const ok = this._cols().map(c => c[0]);
+        if (!ok.includes(this.sortKey)) { this.sortKey = 'size'; this.sortDir = -1; }
+        if (!ok.includes(this.sortKey2)) this.sortKey2 = null;
+      }));
     const oz = zsEl('label', 'media-opt');
     const ozBox = zsEl('input');
     ozBox.type = 'checkbox';
@@ -168,6 +179,22 @@ class ZuneStorageView {
     controls.appendChild(oz);
     c.appendChild(controls);
 
+    c.tabIndex = -1;
+    if (!c.dataset.zsKeys) {
+      c.dataset.zsKeys = '1';
+      c.addEventListener('keydown', (e) => {
+        if (e.target.closest('input, textarea, select')) return;
+        if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'a') {
+          e.preventDefault(); e.stopPropagation();
+          for (const r of (this.rows || []).slice(0, this.limit)) this.selected.add(this._rowKey(r));
+          this._paintSelection();
+        } else if (e.key === 'Escape' && this.selected.size) {
+          e.preventDefault(); e.stopPropagation();
+          this.selected.clear();
+          this._paintSelection();
+        }
+      });
+    }
     this.selBar = zsEl('div', 'songs-table-selbar zs-selbar');
     c.appendChild(this.selBar);
     this.listEl = zsEl('div', 'zs-list');
@@ -177,22 +204,49 @@ class ZuneStorageView {
     search.setSelectionRange(search.value.length, search.value.length);
   }
 
+  _cols() {
+    if (this.group === 'items') {
+      return [['title', 'title'], ['artist', 'artist'], ['album', 'album'], ['cat', 'type'], ['duration', 'time'], ['kbps', 'quality'], ['size', 'size'], ['on', 'on']];
+    }
+    return this.group === 'albums'
+      ? [['title', 'album'], ['artist', 'artist'], ['count', 'items'], ['duration', 'time'], ['size', 'size'], ['on', 'on']]
+      : [['title', 'artist'], ['count', 'items'], ['duration', 'time'], ['size', 'size'], ['on', 'on']];
+  }
+
+  _rowKey(r) { return r.group ? 'g:' + r.key : String(r.handle); }
+
+  /** Handles of the selected rows (a selected album or artist counts all its items). */
+  _selectedHandles() {
+    const out = new Set();
+    for (const r of this.rows || []) if (this.selected.has(this._rowKey(r))) for (const h of this._handlesOf(r)) out.add(h);
+    return [...out];
+  }
+
   _drawSelBar() {
     const bar = this.selBar;
     bar.innerHTML = '';
-    const byHandle = new Map(this._items().map(i => [i.handle, i]));
-    const sel = [...this.selected].map(h => byHandle.get(h)).filter(Boolean);
-    if (!sel.length) { bar.style.display = 'none'; return; }
     bar.style.display = '';
+    const byHandle = new Map(this._items().map(i => [i.handle, i]));
+    const sel = this._selectedHandles().map(h => byHandle.get(h)).filter(Boolean);
+    bar.classList.toggle('empty', !sel.length);
+    if (!sel.length) {
+      bar.appendChild(zsEl('span', 'songs-table-selhint', 'click to select · ⌘-click to add more, shift-click for a range, ⌘A for all shown · click a column to sort, shift-click another to sort within it'));
+      return;
+    }
     const bytes = sel.reduce((s, i) => s + i.size, 0);
     const notHere = sel.filter(i => i.onComputer === false).length;
     bar.appendChild(zsEl('span', 'songs-table-selcount', `${sel.length} selected · frees ${zsSize(bytes)}`));
-    if (notHere) bar.appendChild(zsEl('span', 'song-fixer-dim', `${notHere} of them only on the zune (you’ll be asked to copy them first)`));
     const rm = zsEl('button', 'songs-table-selbtn danger', 'remove from zune');
     rm.addEventListener('click', () => this._remove(sel));
     const clear = zsEl('button', 'songs-table-selbtn dim', 'clear');
-    clear.addEventListener('click', () => { this.selected.clear(); this._drawList(); });
+    clear.addEventListener('click', () => { this.selected.clear(); this._paintSelection(); });
     bar.append(rm, clear);
+    if (notHere) bar.appendChild(zsEl('span', 'song-fixer-dim', `${notHere} only on the zune — you’ll be asked to copy them first`));
+  }
+
+  _paintSelection() {
+    for (const el of this.listEl.querySelectorAll('.zs-tbody .zs-trow')) el.classList.toggle('selected', this.selected.has(el.dataset.key));
+    this._drawSelBar();
   }
 
   _drawList() {
@@ -200,45 +254,84 @@ class ZuneStorageView {
     if (!list) return;
     list.innerHTML = '';
     const rows = this._visible();
+    this.rows = rows;
+    const cols = this._cols();
     const total = rows.reduce((s, r) => s + r.size, 0);
-    const head = zsEl('div', 'zs-head');
-    const allBox = zsEl('input');
-    allBox.type = 'checkbox';
-    const visHandles = rows.flatMap(r => this._handlesOf(r));
-    allBox.checked = visHandles.length > 0 && visHandles.every(h => this.selected.has(h));
-    allBox.addEventListener('change', () => {
-      for (const h of visHandles) { if (allBox.checked) this.selected.add(h); else this.selected.delete(h); }
-      this._drawList();
-    });
-    const label = zsEl('label', 'zune-diff-select-all');
-    label.append(allBox, document.createTextNode(` ${rows.length} ${this.group === 'items' ? 'item' : this.group === 'albums' ? 'album' : 'artist'}${rows.length === 1 ? '' : 's'} · ${zsSize(total)}`));
-    head.appendChild(label);
+    const k2 = this.sortKey2 && this.sortKey2 !== this.sortKey ? this.sortKey2 : null;
+    const name = (k) => (cols.find(c => c[0] === k) || [k, k])[1];
+    list.appendChild(zsEl('div', 'zs-count', `${rows.length} ${this.group === 'items' ? 'item' : this.group === 'albums' ? 'album' : 'artist'}${rows.length === 1 ? '' : 's'} · ${zsSize(total)}` +
+      (k2 ? ` · by ${name(this.sortKey)}, then ${name(k2)}` : '')));
+
+    // Column headers: click to sort, shift-click to sort within
+    const head = zsEl('div', 'zs-trow zs-thead zs-' + this.group);
+    for (const [k, label] of cols) {
+      const h = zsEl('div', 'zs-cell zs-c-' + k + (k === this.sortKey || k === k2 ? ' sorted' : ''));
+      const arrow = (d) => (d > 0 ? ' ▴' : ' ▾');
+      h.textContent = label + (k === this.sortKey ? arrow(this.sortDir) + (k2 ? '1' : '') : k === k2 ? arrow(this.sortDir2) + '2' : '');
+      h.title = 'click to sort · shift-click to also sort by this';
+      h.addEventListener('click', (e) => {
+        const first = (key) => (key === 'size' || key === 'duration' || key === 'count' ? -1 : 1);
+        if (e.shiftKey && this.sortKey !== k) {
+          if (this.sortKey2 === k) this.sortDir2 = -this.sortDir2; else { this.sortKey2 = k; this.sortDir2 = first(k); }
+        } else if (this.sortKey === k) this.sortDir = -this.sortDir;
+        else { this.sortKey = k; this.sortDir = first(k); if (this.sortKey2 === k) this.sortKey2 = null; }
+        this._drawList();
+      });
+      head.appendChild(h);
+    }
     list.appendChild(head);
 
-    for (const r of rows.slice(0, this.limit)) {
-      const handles = this._handlesOf(r);
-      const row = zsEl('div', 'zune-diff-item zs-row');
-      const box = zsEl('input', 'zune-diff-check');
-      box.type = 'checkbox';
-      box.checked = handles.every(h => this.selected.has(h));
-      box.addEventListener('change', () => {
-        for (const h of handles) { if (box.checked) this.selected.add(h); else this.selected.delete(h); }
-        this._drawSelBar();
-      });
-      const info = zsEl('div', 'zune-diff-info');
-      info.appendChild(zsEl('span', 'zune-diff-title', r.title));
-      const sub = r.group
-        ? `${r.artist ? r.artist + ' · ' : ''}${r.count} item${r.count === 1 ? '' : 's'}`
-        : [r.cat !== 'music' ? r.cat.replace(/s$/, '') : '', r.artist, r.album].filter(Boolean).join(' — ');
-      if (sub) info.appendChild(zsEl('span', 'zune-diff-meta', sub));
-      const where = r.onComputer === true ? ['on computer too', 'zs-ok'] : r.onComputer === 'some' ? ['some on computer', 'zs-some'] : r.onComputer === false ? ['only on zune', 'zs-only'] : null;
-      const tag = where ? zsEl('span', 'zs-tag ' + where[1], where[0]) : zsEl('span', 'zs-tag');
-      const len = zsEl('span', 'zs-num', zsTime(r.duration));
-      const q = zsEl('span', 'zs-num zs-kbps', !r.group && r.kbps ? r.kbps + ' kbps' : '');
-      const size = zsEl('span', 'zs-num zs-size', zsSize(r.size));
-      row.append(box, info, tag, len, q, size);
-      list.appendChild(row);
+    const body = zsEl('div', 'zs-tbody');
+    const shown = rows.slice(0, this.limit);
+    for (const r of shown) {
+      const row = zsEl('div', 'zs-trow zs-' + this.group);
+      row.dataset.key = this._rowKey(r);
+      if (this.selected.has(row.dataset.key)) row.classList.add('selected');
+      for (const [k] of cols) {
+        const c = zsEl('div', 'zs-cell zs-c-' + k);
+        if (k === 'title') c.textContent = r.title;
+        else if (k === 'artist') c.textContent = r.artist || '';
+        else if (k === 'album') c.textContent = r.album || '';
+        else if (k === 'cat') c.textContent = r.cat === 'music' ? 'song' : r.cat.replace(/s$/, '');
+        else if (k === 'duration') c.textContent = zsTime(r.duration);
+        else if (k === 'kbps') c.textContent = r.kbps ? r.kbps + ' kbps' : '';
+        else if (k === 'size') c.textContent = zsSize(r.size);
+        else if (k === 'count') c.textContent = String(r.count);
+        else if (k === 'on') {
+          const w = r.onComputer === true ? ['both', 'zs-ok'] : r.onComputer === 'some' ? ['some on computer', 'zs-some'] : r.onComputer === false ? ['zune only', 'zs-only'] : null;
+          if (w) { c.textContent = w[0]; c.classList.add(w[1]); }
+          c.title = r.onComputer === true ? 'also on your computer' : r.onComputer === false ? 'its only copy is on the zune' : '';
+        }
+        if (k !== 'on') c.title = c.textContent;
+        row.appendChild(c);
+      }
+      body.appendChild(row);
     }
+    list.appendChild(body);
+
+    // Selecting: click, cmd-click, shift-click (the highlight moves; nothing is redrawn)
+    body.addEventListener('click', (e) => {
+      const row = e.target.closest('.zs-trow');
+      if (!row) return;
+      const key = row.dataset.key;
+      const keys = shown.map(r => this._rowKey(r));
+      if (e.shiftKey && this.anchor) {
+        const a = keys.indexOf(this.anchor), b = keys.indexOf(key);
+        if (a !== -1 && b !== -1) {
+          if (!(e.metaKey || e.ctrlKey)) this.selected.clear();
+          for (let i = Math.min(a, b); i <= Math.max(a, b); i++) this.selected.add(keys[i]);
+        }
+      } else if (e.metaKey || e.ctrlKey) {
+        if (this.selected.has(key)) this.selected.delete(key); else this.selected.add(key);
+        this.anchor = key;
+      } else {
+        this.selected = new Set([key]);
+        this.anchor = key;
+      }
+      this.container.focus({ preventScroll: true });
+      this._paintSelection();
+    });
+
     if (rows.length > this.limit) {
       const more = zsEl('button', 'song-fixer-link song-fixer-more', `show more (${rows.length - this.limit} left)`);
       more.addEventListener('click', () => { this.limit += ZS_PAGE; this._drawList(); });
@@ -258,8 +351,7 @@ class ZuneStorageView {
     }
     // Songs: the computer's copy is checked, and missing ones are offered to be copied first
     if (songs.length) await zp.removeFromDevice(songs);
-    const left = new Set([...(zp.browseData?.music || []), ...(zp.browseData?.videos || []), ...(zp.browseData?.pictures || []), ...(zp.browseData?.podcasts || [])].map(d => d.handle));
-    for (const h of [...this.selected]) if (!left.has(h)) this.selected.delete(h);
+    this.selected.clear();
     this._draw();
   }
 }

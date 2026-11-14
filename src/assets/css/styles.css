@@ -4612,3 +4612,20 @@ body.zune-panel-open .content-area { padding-right: 372px; }
 .songs-table-selbar { min-height: 30px; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
 .songs-table-selbar.empty { background: transparent; }
 .songs-table-selbar.empty .songs-table-selhint { margin-left: 0; }
+
+/* Zune storage table */
+.zs-count { font-size: 12px; color: #888; margin: 4px 0; }
+.zs-trow { display: grid; align-items: center; column-gap: 12px; padding: 0 8px; min-height: 34px; font-size: 13px; color: #ddd; border-bottom: 1px solid rgba(255,255,255,0.04); cursor: default; user-select: none; }
+.zs-trow.zs-items { grid-template-columns: minmax(160px, 2.2fr) minmax(110px, 1.3fr) minmax(110px, 1.4fr) 62px 56px 72px 76px 92px; }
+.zs-trow.zs-albums { grid-template-columns: minmax(180px, 2.4fr) minmax(120px, 1.5fr) 56px 70px 80px 120px; }
+.zs-trow.zs-artists { grid-template-columns: minmax(200px, 3fr) 56px 70px 80px 120px; }
+.zs-thead { font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px; color: #777; min-height: 28px; border-bottom: 1px solid #333; }
+.zs-thead .zs-cell { cursor: pointer; }
+.zs-thead .zs-cell:hover, .zs-thead .sorted { color: #fff; }
+.zs-tbody .zs-trow:hover { background: rgba(255,255,255,0.06); }
+.zs-tbody .zs-trow.selected { background: rgba(255,105,0,0.18); }
+.zs-cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zs-c-duration, .zs-c-kbps, .zs-c-size, .zs-c-count { text-align: right; font-variant-numeric: tabular-nums; }
+.zs-tbody .zs-c-artist, .zs-tbody .zs-c-album, .zs-tbody .zs-c-cat, .zs-tbody .zs-c-kbps, .zs-tbody .zs-c-duration { color: #aaa; }
+.zs-c-on { font-size: 12px; }
+.zune-storage:focus { outline: none; }
