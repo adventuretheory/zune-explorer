@@ -2747,7 +2747,10 @@ class ZuneSyncPanel {
             if (hp) window.electronAPI.offZunePullProgress(hp);
         }
         if (!result.success) throw new Error(result.error || 'could not delete from the zune');
-        if (result.storage) this._updateStorage(result.storage);
+        if (result.storage) {
+            this._updateStorage(result.storage);
+            if (this.lastStatus) this.lastStatus.storage = result.storage; // free space shown elsewhere
+        }
         if (this.browseData) {
             const failed = new Set((result.errors || []).map(e => e.handle));
             const gone = new Set(handles.filter(h => !failed.has(h)));

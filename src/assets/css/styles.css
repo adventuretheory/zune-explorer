@@ -4591,3 +4591,19 @@ body.zune-panel-open .content-area { padding-right: 372px; }
 .np-lyrics-btn:hover { border-color: var(--zune-orange, #ff6900); color: #fff; }
 .np-lyrics-save { border-color: var(--zune-orange, #ff6900); color: var(--zune-orange, #ff6900); }
 .np-lyrics-status { font-size: 12px; color: #aaa; margin-top: 8px; min-height: 16px; }
+
+/* Zune storage */
+.zs-bar { display: flex; height: 8px; background: #222; border-radius: 4px; overflow: hidden; max-width: 760px; margin: 6px 0 6px; }
+.zs-seg { height: 100%; }
+.zs-sum { font-size: 13px; color: #aaa; margin-bottom: 12px; }
+.zs-controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
+.zs-search { flex: 1; min-width: 220px; max-width: 420px; padding: 7px 10px; font-size: 13px; }
+.zs-head { padding: 6px 0; border-bottom: 1px solid #222; }
+.zs-row { gap: 12px; }
+.zs-row .zune-diff-info { flex: 1; min-width: 0; }
+.zs-num { width: 70px; text-align: right; font-size: 12px; color: #999; font-variant-numeric: tabular-nums; flex: none; }
+.zs-size { color: #eee; width: 80px; }
+.zs-tag { width: 120px; flex: none; font-size: 11px; text-align: right; }
+.zs-ok { color: #8fd18f; }
+.zs-some { color: #b9a46a; }
+.zs-only { color: #ff9a4d; }

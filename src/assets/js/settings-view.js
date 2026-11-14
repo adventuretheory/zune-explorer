@@ -139,6 +139,14 @@ class SettingsView {
           this.push({ title: 'cds', renderContent: (el) => this.cdView.render(el) });
         },
       },
+      {
+        kind: 'nav',
+        label: 'zune storage',
+        onClick: () => {
+          if (!this.zuneStorageView) this.zuneStorageView = new window.ZuneStorageView(this.explorer);
+          this.push({ title: 'zune storage', renderContent: (el) => this.zuneStorageView.render(el) });
+        },
+      },
       { kind: 'nav', label: 'library',  onClick: () => this.push({ title: 'library',  buildItems: () => this._libraryItems()  }) },
       { kind: 'nav', label: 'sync',     onClick: () => this.push({ title: 'sync',     buildItems: () => this._syncItems()     }) },
       { kind: 'nav', label: 'podcasts', onClick: () => this.push({ title: 'podcasts', buildItems: () => this._podcastsItems() }) },
