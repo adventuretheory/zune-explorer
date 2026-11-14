@@ -516,7 +516,18 @@ ipcMain.handle('zune-device-info', async () => {
 
 ipcMain.handle('zune-send-files', async (event, filePaths, opts) => {
   try {
-    const result = await zuneManager.sendFiles(filePaths, { replaceArt: !!opts?.replaceArt });
+    // Replacing fixed songs: path -> handle of the old copy, removed just before each send
+    let replace = null;
+    if (opts?.replace && typeof opts.replace === 'object') {
+      replace = {};
+      for (const [p, h] of Object.entries(opts.replace)) if (Number.isInteger(h)) replace[p] = h;
+    }
+    const result = await zuneManager.sendFiles(filePaths, {
+      replaceArt: !!opts?.replaceArt,
+      replace,
+      // Remembered right away, so a stopped update resends this song next time
+      onOldRemoved: replace ? (p) => { songFixer.zuneMarkRemoved([p]).catch(() => {}); } : null,
+    });
     return { success: true, ...(result || {}) };
   } catch (error) {
     return { success: false, error: error.message };

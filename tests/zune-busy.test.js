@@ -76,3 +76,24 @@ test('deleting reports progress for each song', { skip: !ZuneManager && 'usb mod
   assert.equal(r.deleted, 3);
   assert.deepEqual(seen, ['0/3', '1/3', '2/3', '3/3']);
 });
+
+test('replacing removes each old copy just before sending its new one, and skips a song whose old copy stays', { skip: !ZuneManager && 'usb module not built' }, async () => {
+  const zm = connectedManager();
+  const log = [];
+  zm.mtp = {
+    deleteObject: async (h) => { log.push('delete ' + h); if (h === 22) throw new Error('DeviceBusy'); },
+    getStorageInfo: async () => ({}),
+  };
+  // Stand-in for the real send of one file: record it and succeed
+  zm._readMetadata = async (p) => { log.push('send ' + p); throw new Error('stop-after-log'); };
+  const removed = [];
+  await zm.sendFiles(['/a.mp3', '/b.mp3'], {
+    replace: { '/a.mp3': 11, '/b.mp3': 22 },
+    onOldRemoved: (p) => removed.push(p),
+  }).catch(() => {});
+  assert.deepEqual(log.slice(0, 2), ['delete 11', 'send /a.mp3'], 'old copy goes right before its new one');
+  assert.ok(log.includes('delete 22'));
+  assert.ok(!log.includes('send /b.mp3'), 'not sent when the old copy could not be removed');
+  assert.deepEqual(removed, ['/a.mp3']);
+  assert.equal(zm.transferring, false);
+});

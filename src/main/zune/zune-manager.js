@@ -261,8 +261,14 @@ class ZuneManager extends EventEmitter {
    * @param {object} [opts]
    * @param {boolean} [opts.replaceArt] set album art on albums that already
    *   exist too (used when updating fixed songs whose art changed)
+   * @param {Object<string, number>} [opts.replace] file path -> browse handle
+   *   of its old copy on the Zune. The old copy is removed just before that
+   *   song is sent (one song at a time), so stopping part-way leaves at most
+   *   one song missing.
+   * @param {(filePath: string) => void} [opts.onOldRemoved] called as soon as
+   *   an old copy is gone (so an interrupted update can resend it)
    */
-  async sendFiles(filePaths, { replaceArt = false } = {}) {
+  async sendFiles(filePaths, { replaceArt = false, replace = null, onOldRemoved = null } = {}) {
     if (!this.connected) {
       throw new Error('No Zune device connected');
     }
@@ -306,6 +312,27 @@ class ZuneManager extends EventEmitter {
 
           let fileSucceeded = false;
           let lastError = null;
+
+          // Replacing: take the old copy off first, right before its new one goes on
+          const oldHandle = replace && Object.prototype.hasOwnProperty.call(replace, filePath) ? replace[filePath] : null;
+          if (oldHandle != null) {
+            this.emit('transfer-progress', {
+              state: 'replacing', fileName: path.basename(filePath), fileIndex: completedFiles,
+              totalFiles, bytesTransferred: 0, totalBytes: 0,
+            });
+            try {
+              await this._deleteOneObject(oldHandle);
+            } catch (err) {
+              if (!/InvalidObjectHandle/.test(err.message)) {
+                // Couldn't remove the old copy: don't add a second one next to it
+                console.log(`ZuneManager: could not remove old copy of ${path.basename(filePath)}: ${err.message}`);
+                failed.push({ path: filePath, error: 'could not remove the old copy: ' + err.message });
+                completedFiles++;
+                continue;
+              }
+            }
+            try { onOldRemoved?.(filePath); } catch (_) { /* bookkeeping only */ }
+          }
 
           for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
             let objectHandle = null;
@@ -1515,6 +1542,26 @@ class ZuneManager extends EventEmitter {
     return { written: writes.length - errors.length, errors };
   }
 
+  /**
+   * Delete one object by its browse handle. Browse handles may be ZMDB atom
+   * IDs, so the real MTP object is looked up. Throws InvalidObjectHandle when
+   * it's already gone.
+   */
+  async _deleteOneObject(handle) {
+    const realHandle = await this.resolveHandle(handle);
+    try {
+      await this.mtp.deleteObject(realHandle);
+    } catch (err) {
+      // The atom ID may not be this track's MTP handle even though the probe
+      // said they usually match; look the file up before calling it gone.
+      if (!/InvalidObjectHandle/.test(err.message) || this.zmdbHandlesValid !== true || !this._zmdbEntries) throw err;
+      if (!this._handleCache) await this._buildHandleCache();
+      const alt = this._handleCache.get(handle);
+      if (alt == null || alt === realHandle) throw err;
+      await this.mtp.deleteObject(alt);
+    }
+  }
+
   async deleteObjects(handles) {
     if (!this.connected) {
       throw new Error('No Zune device connected');
@@ -1531,19 +1578,7 @@ class ZuneManager extends EventEmitter {
       // Deleting hundreds of songs takes a while: say how far along it is
       this.emit('delete-progress', { done: done++, total: handles.length });
       try {
-        // Browse handles may be ZMDB atom IDs; delete the real MTP object
-        const realHandle = await this.resolveHandle(handle);
-        try {
-          await this.mtp.deleteObject(realHandle);
-        } catch (err) {
-          // The atom ID may not be this track's MTP handle even though the probe
-          // said they usually match; look the file up before calling it gone.
-          if (!/InvalidObjectHandle/.test(err.message) || this.zmdbHandlesValid !== true || !this._zmdbEntries) throw err;
-          if (!this._handleCache) await this._buildHandleCache();
-          const alt = this._handleCache.get(handle);
-          if (alt == null || alt === realHandle) throw err;
-          await this.mtp.deleteObject(alt);
-        }
+        await this._deleteOneObject(handle);
         deleted++;
       } catch (err) {
         // InvalidObjectHandle means the item is already gone — count as deleted

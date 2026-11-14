@@ -601,6 +601,20 @@ class ZuneSyncPanel {
                 bytesEl.textContent = 'converting to mp3...';
                 break;
 
+            case 'replacing':
+                // Update zune: the old copy of this song comes off just before its new one goes on
+                idleEl.style.display = 'none';
+                progressEl.style.display = 'block';
+                completeEl.style.display = 'none';
+                document.getElementById('zune-sync-title').textContent = 'updating...';
+                document.getElementById('zune-sync-subtitle').textContent = `${progress.fileIndex + 1} of ${progress.totalFiles}`;
+                countEl.textContent = `replacing ${progress.fileIndex + 1} of ${progress.totalFiles}`;
+                fileEl.textContent = progress.fileName;
+                fillEl.style.width = '0%';
+                bytesEl.textContent = 'removing the old copy\u2026';
+                overallEl.style.width = ((progress.fileIndex / progress.totalFiles) * 100).toFixed(1) + '%';
+                break;
+
             case 'sending':
                 idleEl.style.display = 'none';
                 progressEl.style.display = 'block';
@@ -1640,47 +1654,37 @@ class ZuneSyncPanel {
 
         this._fixedBusy = true;
         btn.disabled = true;
-        const steps = (plan.replace.length + plan.remove.length ? 1 : 0) + (plan.replace.length + plan.resend.length ? 1 : 0);
+        const steps = (plan.remove.length ? 1 : 0) + (plan.replace.length + plan.resend.length ? 1 : 0);
         const stepLabel = (n) => (steps > 1 ? ` (step ${n} of ${steps})` : '');
         btn.textContent = 'updating\u2026';
         let removedPaths = [];
         try {
-            // 1. Take old copies (of fixed songs) and deleted songs off the Zune
-            const targets = [...plan.replace, ...plan.remove];
+            // 1. Songs deleted from the computer: take them off the Zune
             let removedDeleted = [];
-            if (targets.length) {
-                btn.textContent = `removing old copies from the zune${stepLabel(1)}\u2026`;
-                const started = Date.now();
-                const res = await this.deleteDeviceItems(targets.map(r => r.handle), {
+            if (plan.remove.length) {
+                btn.textContent = `removing deleted songs from the zune${stepLabel(1)}\u2026`;
+                const res = await this.deleteDeviceItems(plan.remove.map(r => r.handle), {
                     onProgress: (p) => {
-                        if (p.phase === 'finding') {
-                            btn.textContent = `finding the old copies on the zune \u2014 ${p.scanned} files checked${stepLabel(1)}`;
-                            return;
-                        }
-                        // Rough time left, once a few have gone
-                        let left = '';
-                        if (p.done >= 5 && p.done < p.total) {
-                            const secs = Math.round(((Date.now() - started) / p.done) * (p.total - p.done) / 1000);
-                            left = secs >= 60 ? ` \u2014 about ${Math.round(secs / 60)} min left` : ` \u2014 about ${secs} s left`;
-                        }
-                        btn.textContent = `removing old copies from the zune: ${Math.min(p.done + 1, p.total)} of ${p.total}${left}${stepLabel(1)}`;
+                        btn.textContent = p.phase === 'finding'
+                            ? `finding them on the zune \u2014 ${p.scanned} files checked${stepLabel(1)}`
+                            : `removing deleted songs from the zune: ${Math.min(p.done + 1, p.total)} of ${p.total}${stepLabel(1)}`;
                     },
                 });
-                btn.textContent = `starting to send the fixed songs${stepLabel(2)}\u2026`;
                 const failedHandles = new Set((res.errors || []).map(e => e.handle));
-                removedPaths = plan.replace.filter(r => !failedHandles.has(r.handle)).map(r => r.path);
                 removedDeleted = plan.remove.filter(r => !failedHandles.has(r.handle)).map(r => r.path);
-                // Remember they're gone, so an interrupted update still resends them
-                await window.electronAPI.songFixerZuneRemoved(removedPaths);
-                await window.electronAPI.songFixerZuneDone([...removedDeleted, ...finished]);
-            } else if (finished.length) {
-                await window.electronAPI.songFixerZuneDone(finished);
             }
+            if (removedDeleted.length || finished.length) await window.electronAPI.songFixerZuneDone([...removedDeleted, ...finished]);
 
-            // 2. Send the fixed files
-            const toSend = [...removedPaths, ...plan.resend];
+            // 2. Fixed songs, one at a time: old copy off, new copy on. Stopping
+            // part-way leaves at most one song missing, and the next update resends it.
+            const replaceMap = {};
+            for (const r of plan.replace) replaceMap[r.path] = r.handle;
+            const toSend = [...plan.replace.map(r => r.path), ...plan.resend];
+            if (toSend.length) btn.textContent = `replacing fixed songs one at a time${stepLabel(2)}\u2026`;
             // Fixed songs may have new (or removed website) album art: replace the album's picture too
-            const sent = toSend.length ? await window.electronAPI.zuneSendFiles(toSend, { replaceArt: true }) : { success: true, succeeded: [] };
+            const sent = toSend.length
+                ? await window.electronAPI.zuneSendFiles(toSend, { replaceArt: true, replace: replaceMap })
+                : { success: true, succeeded: [] };
             if (!sent.success) throw new Error(sent.error || 'sending failed');
             const succeeded = sent.succeeded || [];
             await window.electronAPI.songFixerZuneDone(succeeded);
