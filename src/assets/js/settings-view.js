@@ -104,6 +104,24 @@ class SettingsView {
 
   _rootItems() {
     return [
+      // Used often, so right on the first page
+      {
+        kind: 'action',
+        label: 'rescan music folders now',
+        onClick: async () => {
+          this.explorer.showToast?.('rescanning your music folders\u2026');
+          const ok = await this.explorer.rescanMusicLibrary?.();
+          this.explorer.showToast?.(ok === false ? 'a scan is already running' : `music library rescanned \u2014 ${this.explorer.musicLibrary.tracks.size} songs`);
+        },
+      },
+      {
+        kind: 'nav',
+        label: 'fix songs & find duplicates',
+        onClick: () => {
+          if (!this.songFixer) this.songFixer = new window.SongFixerView(this.explorer);
+          this.push({ title: 'fix songs', renderContent: (el) => this.songFixer.render(el) });
+        },
+      },
       { kind: 'nav', label: 'library',  onClick: () => this.push({ title: 'library',  buildItems: () => this._libraryItems()  }) },
       { kind: 'nav', label: 'sync',     onClick: () => this.push({ title: 'sync',     buildItems: () => this._syncItems()     }) },
       { kind: 'nav', label: 'podcasts', onClick: () => this.push({ title: 'podcasts', buildItems: () => this._podcastsItems() }) },
@@ -130,23 +148,6 @@ class SettingsView {
         kind: 'nav',
         label: 'picture folders',
         onClick: () => this.push({ title: 'picture folders', buildItems: () => this._folderListItems('pictures') }),
-      },
-      {
-        kind: 'action',
-        label: 'rescan music folders now',
-        onClick: async () => {
-          this.explorer.showToast?.('rescanning your music folders\u2026');
-          const ok = await this.explorer.rescanMusicLibrary?.();
-          this.explorer.showToast?.(ok === false ? 'a scan is already running' : `music library rescanned \u2014 ${this.explorer.musicLibrary.tracks.size} songs`);
-        },
-      },
-      {
-        kind: 'nav',
-        label: 'fix songs & find duplicates',
-        onClick: () => {
-          if (!this.songFixer) this.songFixer = new window.SongFixerView(this.explorer);
-          this.push({ title: 'fix songs', renderContent: (el) => this.songFixer.render(el) });
-        },
       },
       {
         kind: 'toggle',

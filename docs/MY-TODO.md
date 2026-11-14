@@ -9,7 +9,7 @@ Things to come back to once the editing is done.
 - [ ] Optional: turn on GitHub Actions in this fork so installers can be built without Terminal
 
 ## Clean-up and sync
-- [ ] Duplicates on the Zune: settings → library → fix songs & find duplicates → duplicates on zune
+- [ ] Duplicates on the Zune: settings → fix songs & find duplicates → duplicates on zune
 - [ ] Duplicates on the Mac: same page → duplicates (identical copies first, then different versions)
 - [ ] Fix songs (needs fixing tab), delete the ones that can't be fixed
 - [ ] Zune music list → rescan → **update zune** to apply fixes and deletions

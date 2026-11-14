@@ -1,5 +1,5 @@
 /* global document, window */
-// Settings → library → fix song info.
+// Settings → fix songs & find duplicates.
 // Finds songs with missing or messy tags, recognises them by their audio
 // (AcoustID), shows the proposed changes, and writes only what you approve.
 
