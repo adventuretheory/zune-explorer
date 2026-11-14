@@ -122,6 +122,23 @@ class SettingsView {
           this.push({ title: 'fix songs', renderContent: (el) => this.songFixer.render(el) });
         },
       },
+      {
+        kind: 'nav',
+        label: 'import new music',
+        onClick: () => {
+          if (!this.importView) this.importView = new window.ImportView(this.explorer);
+          this.importView.items = null; // look again each time
+          this.push({ title: 'import', renderContent: (el) => this.importView.render(el) });
+        },
+      },
+      {
+        kind: 'nav',
+        label: 'cds: rip & burn',
+        onClick: () => {
+          if (!this.cdView) this.cdView = new window.CdView(this.explorer);
+          this.push({ title: 'cds', renderContent: (el) => this.cdView.render(el) });
+        },
+      },
       { kind: 'nav', label: 'library',  onClick: () => this.push({ title: 'library',  buildItems: () => this._libraryItems()  }) },
       { kind: 'nav', label: 'sync',     onClick: () => this.push({ title: 'sync',     buildItems: () => this._syncItems()     }) },
       { kind: 'nav', label: 'podcasts', onClick: () => this.push({ title: 'podcasts', buildItems: () => this._podcastsItems() }) },

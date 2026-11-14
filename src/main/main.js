@@ -24,6 +24,8 @@ const zuneManager = new ZuneManager();
 let deviceCache = null; // initialized after app.whenReady
 let metadataCache;
 let songFixer;
+let mediaTools; // import new music, rip and burn CDs
+const { MediaTools } = require('./media-tools.js');
 let artistImages = null;
 let podcastManager = null;
 
@@ -108,6 +110,15 @@ app.whenReady().then(async () => {
     fetchBinary: musicbrainz.fetchUnlimited,
     trashItem: (p) => shell.trashItem(p),
     searchRecordings: musicbrainz.searchRecordings,
+  });
+  mediaTools = new MediaTools({
+    ffmpegPath,
+    dataDir: path.join(app.getPath('userData'), 'song-fixer'),
+    songFixer,
+    trashItem: (p) => shell.trashItem(p),
+    musicbrainz,
+    coverForRelease: (id) => coverForRelease(id),
+    findAlbumArt: (info) => findAlbumArt(info),
   });
   artistImages = new ArtistImages(app.getPath('userData'), {
     searchArtists: musicbrainz.searchArtists,
@@ -1523,6 +1534,114 @@ ipcMain.handle('song-fixer-remove-cover', async (event, batchId, filePath, hash)
     if (typeof filePath !== 'string' || !isAllowedPath(filePath)) throw new Error('Path not allowed');
     if (!/^[0-9a-f]{40}$/.test(String(hash))) throw new Error('Bad picture id');
     return { success: true, ...(await songFixer.removeCover(String(batchId), filePath, hash)) };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+// ---- Import new music, audio CDs -------------------------------------------
+let mediaStop = false;
+let lastDisc = null;
+const sendMediaProgress = (event, data) => { if (!event.sender.isDestroyed()) event.sender.send('media-progress', data); };
+
+ipcMain.handle('import-scan', async (event, folders, libraryFolders) => {
+  try {
+    const ok = (Array.isArray(folders) ? folders : []).filter(f => typeof f === 'string' && isAllowedPath(f));
+    const lib = (Array.isArray(libraryFolders) ? libraryFolders : []).filter(f => typeof f === 'string');
+    return { success: true, items: await mediaTools.scan(ok, lib) };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('import-files', async (event, items, musicRoot, opts) => {
+  try {
+    if (typeof musicRoot !== 'string' || !isAllowedPath(musicRoot)) throw new Error('Music folder not allowed');
+    mediaStop = false;
+    const done = [];
+    const failed = [];
+    const list = (Array.isArray(items) ? items : []).filter(i => i && typeof i.path === 'string' && isAllowedPath(i.path));
+    for (let i = 0; i < list.length; i++) {
+      if (mediaStop) break;
+      const it = list[i];
+      sendMediaProgress(event, { kind: 'import', index: i, total: list.length, name: path.basename(it.path) });
+      const tags = {};
+      for (const k of ['title', 'artist', 'album', 'albumArtist', 'year', 'trackNumber']) {
+        if (it.tags && it.tags[k] != null) tags[k] = String(it.tags[k]).slice(0, 300);
+      }
+      try {
+        const r = await mediaTools.importFile(it.path, tags, musicRoot, { move: opts?.move !== false, findArt: opts?.findArt !== false });
+        done.push({ from: it.path, to: r.path, artAdded: r.artAdded });
+      } catch (err) {
+        failed.push({ path: it.path, error: err.message });
+      }
+    }
+    return { success: true, done, failed, stopped: mediaStop };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('import-ignore', async (event, paths) => {
+  if (Array.isArray(paths)) await mediaTools.ignore(paths.filter(p => typeof p === 'string' && isAllowedPath(p)));
+});
+
+ipcMain.handle('media-stop', async () => { mediaStop = true; });
+
+ipcMain.handle('cd-find', async () => {
+  try {
+    const r = await mediaTools.findAudioCd();
+    lastDisc = r.disc || null;
+    return { success: true, ...r };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('cd-lookup', async () => {
+  try {
+    return { success: true, candidates: await mediaTools.lookupDisc(lastDisc) };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('cd-rip', async (event, req) => {
+  try {
+    if (!lastDisc) throw new Error('no CD found \u2014 put one in and look again');
+    if (typeof req?.musicRoot !== 'string' || !isAllowedPath(req.musicRoot)) throw new Error('Music folder not allowed');
+    const str = (v) => (v == null ? '' : String(v).slice(0, 300));
+    const byN = new Map(lastDisc.tracks.map(t => [t.n, t]));
+    const tracks = (req.tracks || []).filter(t => byN.has(Number(t.n))).map(t => ({
+      n: Number(t.n), file: byN.get(Number(t.n)).file, title: str(t.title), artist: str(t.artist),
+    }));
+    const a = req.album || {};
+    const album = {
+      album: str(a.album), albumArtist: str(a.albumArtist), year: str(a.year), genre: str(a.genre),
+      disc: Number(a.disc) || 1, discs: Number(a.discs) || 1, trackCount: lastDisc.tracks.length,
+      releaseId: /^[0-9a-f-]{36}$/i.test(a.releaseId || '') ? a.releaseId : null,
+    };
+    mediaStop = false;
+    const r = await mediaTools.rip(tracks, album, req.musicRoot, req.format,
+      (p) => sendMediaProgress(event, { kind: 'rip', ...p }), () => mediaStop);
+    return { success: true, ...r, stopped: mediaStop };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('cd-eject', async () => {
+  try { if (lastDisc) await mediaTools.ejectCd(lastDisc.volume); lastDisc = null; return { success: true }; } catch (error) { return { success: false, error: error.message }; }
+});
+
+ipcMain.handle('burn-status', async () => mediaTools.burnStatus());
+
+ipcMain.handle('burn-cd', async (event, paths) => {
+  try {
+    const ok = (Array.isArray(paths) ? paths : []).filter(p => typeof p === 'string' && isAllowedPath(p));
+    mediaStop = false;
+    await mediaTools.burn(ok, (p) => sendMediaProgress(event, { kind: 'burn', ...p }), () => mediaStop);
+    return { success: true };
   } catch (error) {
     return { success: false, error: error.message };
   }

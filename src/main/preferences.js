@@ -21,6 +21,9 @@ function defaultPrefs(defaultHome) {
     podcasts: { downloadDirectory: null },
     artistImages: { enabled: false },
     songFixer: { acoustidKey: '' },
+    // New music to bring in (e.g. bought downloads), and CD ripping
+    import: { folders: [path.join(defaultHome, 'Downloads')], move: true, findArt: true },
+    cd: { format: 'mp3' },
     screensaver: { autoStart: true, idleMinutes: 2 },
     meta: {
       installedVersion: null,

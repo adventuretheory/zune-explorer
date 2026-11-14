@@ -5288,6 +5288,7 @@ class ZuneExplorer {
             // Mark scan complete and refresh dependent views
             if (data.scanned >= data.total) {
                 lib.scanState = 'complete';
+                this._checkNewMusicOnce();
                 this.applyCachedMetadata().then(() => {
                     this.updatePinnedPanel();
                 });
@@ -6285,6 +6286,7 @@ class ZuneExplorer {
         if (anyLocal) btn('\u2928 shuffle', 'play the selected songs in random order', () => this._songsTableShuffle());
         if (anyLocal) btn('+ add to playlist', 'add the selected songs to a playlist', (e) => this.showDynamicContextMenu(e, this.buildPlaylistSubmenuItems(files())));
         if (anyLocal) btn('add to now playing', 'add to the end of what\u2019s playing', () => { this.addToNowPlaying(files()); this.showToast?.(`added ${n} song${n === 1 ? '' : 's'} to now playing`); });
+        if (anyLocal) btn('burn to cd', 'make an audio cd of the selected songs', () => this.openCdBurn([...st.selected].filter(p => !p.startsWith('zune:'))));
         for (const z of this._songsTableZuneActions()) btn(z.label.toLowerCase(), z.title || '', z.action);
         const localSel = [...st.selected].filter(p => !p.startsWith('zune:'));
         if (localSel.length) btn('move to trash', 'move the selected songs to the Trash (their zune copies are removed on \u201cupdate zune\u201d)', () => this.trashSongs(localSel), 'danger');
@@ -6293,6 +6295,33 @@ class ZuneExplorer {
         hint.className = 'songs-table-selhint';
         hint.textContent = '\u2318-click to add or remove, shift-click for a range, \u2318A for all';
         bar.appendChild(hint);
+    }
+
+    /** Once per run: say if there are new songs waiting in Downloads (or other import folders). */
+    _checkNewMusicOnce() {
+        if (this._checkedNewMusic) return;
+        this._checkedNewMusic = true;
+        setTimeout(async () => {
+            try {
+                const folders = this.preferences?.import?.folders || [];
+                if (!folders.length) return;
+                const r = await window.electronAPI.importScan(folders, this.preferences?.library?.music || []);
+                const n = r?.success ? r.items.length : 0;
+                if (n) this.showToast?.(`${n} new song${n === 1 ? '' : 's'} in ${folders.length === 1 ? folders[0].split(/[/\\]/).pop() : 'your import folders'} \u2014 settings \u2192 import new music to bring ${n === 1 ? 'it' : 'them'} in`);
+            } catch { /* just a hint */ }
+        }, 4000);
+    }
+
+    /** Settings → cds → burn, with these songs ready to go. */
+    openCdBurn(paths) {
+        const idx = this.categories.indexOf('settings');
+        if (idx === -1) return;
+        this.selectCategory(idx);
+        const sv = this.settingsView;
+        if (!sv) return;
+        if (!sv.cdView) sv.cdView = new window.CdView(this);
+        sv.cdView.openBurn(paths);
+        sv.push({ title: 'cds', renderContent: (el) => sv.cdView.render(el) });
     }
 
     /** Zune actions for the selected rows: copy (zune-only songs), remove from zune. */

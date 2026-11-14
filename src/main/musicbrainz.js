@@ -179,4 +179,15 @@ async function getThumbnail(mbid) {
   }
 }
 
-module.exports = { searchRecordings, searchReleases, getRelease, getCoverArt, getThumbnail, searchArtists, fetchUnlimited, fetchJsonUnlimited };
+/** Albums a CD could be, by its MusicBrainz disc ID (falls back to a fuzzy match on the TOC). */
+async function lookupDisc(discId, toc) {
+  const url = `https://musicbrainz.org/ws/2/discid/${encodeURIComponent(discId)}?toc=${toc}&inc=artist-credits+recordings+release-groups&fmt=json`;
+  try {
+    return await rateLimitedFetch(url);
+  } catch (err) {
+    if (/HTTP 404/.test(err.message)) return { releases: [] }; // not in MusicBrainz
+    throw err;
+  }
+}
+
+module.exports = { searchRecordings, searchReleases, getRelease, getCoverArt, getThumbnail, searchArtists, fetchUnlimited, fetchJsonUnlimited, lookupDisc };
