@@ -129,3 +129,15 @@ test('a song the Zune stops answering on is retried once after reconnecting, the
   assert.ok(timeouts.includes(60000) && timeouts[timeouts.length - 1] === 0, 'time limit set while sending and cleared after');
   fsx.rmSync(dir, { recursive: true, force: true });
 });
+
+test('disconnecting closes the session with a time limit, even if the Zune never answers', { skip: !ZuneManager && 'usb module not built' }, async () => {
+  const zm = connectedManager();
+  const timeouts = [];
+  let closed = false;
+  zm.transport = { setTransferTimeout: (ms) => timeouts.push(ms), close: async () => { closed = true; } };
+  zm.mtp = { closeSession: async () => { throw new Error('LIBUSB_TRANSFER_TIMED_OUT'); } };
+  await zm.disconnect();
+  assert.deepEqual(timeouts, [2000, 0]);
+  assert.equal(closed, true);
+  assert.equal(zm.connected, false);
+});

@@ -185,9 +185,32 @@ app.on('window-all-closed', () => {
   }
 });
 
-app.on('before-quit', () => {
+// Let go of the Zune properly before quitting (Cmd+Q, or Ctrl+C in Terminal):
+// otherwise it stays on its sync screen until it's restarted.
+let zuneReleased = false;
+async function releaseZune() {
+  if (zuneReleased) return;
+  zuneReleased = true;
+  try {
+    zuneManager.cancelRequested = true;
+    await Promise.race([zuneManager.disconnect(), new Promise(r => setTimeout(r, 3000))]);
+  } catch { /* quitting anyway */ }
+}
+
+app.on('before-quit', (event) => {
   if (podcastManager) podcastManager.persistLastPlaybackState();
+  if (!zuneReleased && zuneManager.connected) {
+    event.preventDefault();
+    releaseZune().finally(() => app.quit());
+  }
 });
+
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.on(sig, () => {
+    console.log(`\nquitting: letting go of the zune first\u2026`);
+    releaseZune().finally(() => app.exit(0));
+  });
+}
 
 // IPC handlers for file system operations
 ipcMain.handle('get-directory-contents', async (event, dirPath) => {

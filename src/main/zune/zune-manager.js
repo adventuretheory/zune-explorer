@@ -132,8 +132,10 @@ class ZuneManager extends EventEmitter {
 
   async disconnect() {
     if (this.mtp) {
+      // Tell the Zune the session is over, so it leaves its sync screen.
+      // Time-limited: a confused or unplugged Zune mustn't hang quitting.
       try {
-        await this.mtp.closeSession();
+        await this._withUsbTimeout(2000, () => this.mtp.closeSession());
       } catch {
         // Device may already be disconnected
       }
