@@ -2339,6 +2339,28 @@ class ZuneSyncPanel {
         const handles = Array.from(this.diffSelectedHandles);
         const destDir = destResult.path;
         const category = this.diffCategory;
+
+        // Earlier copies saved with a wrong type (e.g. "Song.com") get fixed
+        // first, so they're recognised as music and not copied again
+        try {
+            const rep = await window.electronAPI.zuneRepairCopyNames?.(destDir);
+            if (rep?.renamed?.length) {
+                const map = this._pulledMap();
+                const moved = new Map(rep.renamed.map(r => [r.from, r.to]));
+                for (const [h, p] of Object.entries(map)) if (moved.has(p)) map[h] = moved.get(p);
+                try { localStorage.setItem('zune-pulled:' + (this.deviceKey || ''), JSON.stringify(map)); } catch { /* best-effort */ }
+                const known = new Set(this.explorer.categorizedFiles.music.map(f => f.path));
+                for (const r of rep.renamed) {
+                    if (known.has(r.to)) continue;
+                    this.explorer.categorizedFiles.music.push({
+                        path: r.to, name: r.to.split(/[/\\]/).pop(), extension: '.' + r.to.split('.').pop().toLowerCase(),
+                        size: 0, modified: new Date(), isDirectory: false,
+                    });
+                }
+                await window.electronAPI.batchScanAudioMetadata(rep.renamed.map(r => r.to), { includeArt: true });
+                this.explorer.showToast?.(`fixed the file type of ${rep.renamed.length} earlier cop${rep.renamed.length === 1 ? 'y' : 'ies'} (e.g. \u201c.com\u201d \u2192 \u201c.mp3\u201d)`);
+            }
+        } catch (e) { console.warn('repairing copy names failed', e); }
         const deviceItems = (this.browseData && this.browseData[category]) || [];
         const deviceByHandle = new Map(deviceItems.map(i => [i.handle, i]));
         // Copies get cleaned names and tags: no website names or ID codes

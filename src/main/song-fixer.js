@@ -322,10 +322,12 @@ class SongFixer {
           // Size changes when a cover is removed or audio converted: compare lengths
           await sameLength(temp);
         } else {
-          // The audio is copied as-is, so the new file should be about the same size
+          // The audio is copied as-is, so the new file should be about the same
+          // size; if it shrank (e.g. bulky junk tags were dropped), the audio
+          // must at least be just as long
           const after = await fs.stat(temp);
-          if (after.size < before.size * 0.9) throw new Error('rewritten file came out too small');
-          await parseFile(temp, { duration: false });
+          if (after.size < before.size * 0.9) await sameLength(temp);
+          else await parseFile(temp, { duration: false });
         }
         await fs.rename(temp, filePath);
         return { transcoded: plan.transcode, coverSkipped: !!coverPath && !plan.cover };

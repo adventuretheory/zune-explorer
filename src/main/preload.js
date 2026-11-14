@@ -49,6 +49,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   nowPlayingSave: (data) => ipcRenderer.invoke('now-playing-save', data),
   zunePullFile: (handle, filename, destDir, metadata, onConflict) => ipcRenderer.invoke('zune-pull-file', handle, filename, destDir, metadata, onConflict),
   zunePullCheck: (destDir, items) => ipcRenderer.invoke('zune-pull-check', destDir, items),
+  zuneRepairCopyNames: (destDir) => ipcRenderer.invoke('zune-repair-copy-names', destDir),
   zunePullAskConflicts: (conflicts) => ipcRenderer.invoke('zune-pull-ask-conflicts', conflicts),
   zuneProbeProperties: (handle) => ipcRenderer.invoke('zune-probe-properties', handle),
   zuneProbeWmdrmpd: () => ipcRenderer.invoke('zune-probe-wmdrmpd'),

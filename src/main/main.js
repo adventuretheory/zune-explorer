@@ -785,8 +785,29 @@ async function uniqueDestPath(dir, baseName, ext) {
 }
 
 // The name a copied file gets: "Artist - Title" when tags are known.
+// Only real audio extensions count: Zune file names are often titles that
+// end in ".com" or ".se-sa mix 2008", which are not file types.
+const AUDIO_EXTS = new Set(['.mp3', '.wma', '.m4a', '.mp4', '.aac', '.flac', '.ogg', '.wav']);
+function knownAudioExt(filename) {
+  const e = path.extname(String(filename || '')).toLowerCase();
+  return AUDIO_EXTS.has(e) ? e : '';
+}
+
+/** What kind of audio a file holds, from its first bytes ('.mp3', '.wma', …) or null. */
+function sniffAudioExt(buf) {
+  if (!buf || buf.length < 12) return null;
+  if (buf.slice(0, 3).toString('latin1') === 'ID3') return '.mp3';
+  if (buf[0] === 0x30 && buf[1] === 0x26 && buf[2] === 0xB2 && buf[3] === 0x75) return '.wma'; // ASF
+  if (buf.slice(4, 8).toString('latin1') === 'ftyp') return '.m4a';
+  if (buf.slice(0, 4).toString('latin1') === 'fLaC') return '.flac';
+  if (buf.slice(0, 4).toString('latin1') === 'OggS') return '.ogg';
+  if (buf.slice(0, 4).toString('latin1') === 'RIFF') return '.wav';
+  if (buf[0] === 0xFF && (buf[1] & 0xE0) === 0xE0) return '.mp3'; // MPEG audio frame
+  return null;
+}
+
 function pullBaseName(filename, metadata) {
-  const ext = path.extname(filename).toLowerCase();
+  const ext = knownAudioExt(filename);
   let baseName = path.basename(filename, ext);
   if (metadata?.title) {
     baseName = metadata.title.replace(/[<>:"/\\|?*]/g, '_');
@@ -800,7 +821,7 @@ function pullBaseName(filename, metadata) {
 // Where a copied song lands: "Artist - Title" plus its final extension
 // (WMA is converted to MP3).
 function pullTargetPath(destDir, filename, metadata) {
-  let ext = path.extname(filename).toLowerCase() || '.mp3';
+  let ext = knownAudioExt(filename) || '.mp3';
   if (WMA_EXTENSIONS.has(ext)) ext = '.mp3';
   return path.join(destDir, pullBaseName(filename, metadata) + ext);
 }
@@ -850,6 +871,38 @@ ipcMain.handle('zune-pull-ask-conflicts', async (event, conflicts) => {
   return ['skip', 'keep', 'replace', 'cancel'][response] || 'cancel';
 });
 
+// Earlier copies saved with a wrong "extension" (e.g. "Song (FULL).com"):
+// give them the right one so the library sees them as music again.
+ipcMain.handle('zune-repair-copy-names', async (event, destDir) => {
+  const renamed = [];
+  if (typeof destDir !== 'string' || !isAllowedPath(destDir)) return { renamed };
+  let names = [];
+  try { names = await fs.readdir(destDir); } catch { return { renamed }; }
+  for (const name of names) {
+    if (name.startsWith('.')) continue;
+    const ext = path.extname(name).toLowerCase();
+    if (AUDIO_EXTS.has(ext)) continue;
+    const from = path.join(destDir, name);
+    let head;
+    try {
+      const st = await fs.stat(from);
+      if (!st.isFile() || st.size < 1024) continue;
+      const fh = await fs.open(from, 'r');
+      try { head = Buffer.alloc(16); await fh.read(head, 0, 16, 0); } finally { await fh.close(); }
+    } catch { continue; }
+    const real = sniffAudioExt(head);
+    if (!real) continue;
+    // ".com" etc. was a leftover of the title; drop short fake extensions
+    const base = ext && ext.length <= 5 && !/\s/.test(ext) ? path.basename(name, ext) : name;
+    const to = await uniqueDestPath(destDir, base, real);
+    try {
+      await fs.rename(from, to);
+      renamed.push({ from, to });
+    } catch { /* leave it */ }
+  }
+  return { renamed };
+});
+
 ipcMain.handle('zune-pull-file', async (event, handle, filename, destDir, metadata, onConflict = 'keep') => {
   const tempFiles = [];
   try {
@@ -876,10 +929,10 @@ ipcMain.handle('zune-pull-file', async (event, handle, filename, destDir, metada
       console.error(`zune-pull-file: handle ${handle} returned empty data (0 bytes)`);
       return { success: false, error: 'Device returned empty file (0 bytes)' };
     }
-    let ext = path.extname(filename).toLowerCase();
-    let baseName = path.basename(filename, ext);
-    // Zune filenames sometimes lack an extension — default to .mp3
-    if (!ext) ext = '.mp3';
+    // The file type comes from what's actually in the file; the Zune's file
+    // name may have no extension, or something like ".com" from a title
+    let ext = sniffAudioExt(data) || knownAudioExt(filename) || '.mp3';
+    let baseName;
 
     // Use title as filename if available (ZMDB filenames can be cryptic)
     baseName = pullBaseName(filename, metadata);
