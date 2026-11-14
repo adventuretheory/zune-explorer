@@ -176,3 +176,25 @@ test('connecting retries from the start when the Zune stops answering during the
     MtpzAuth.prototype.authenticate = saved.auth;
   }
 });
+
+test('playlists are created on the Zune with their songs, or updated in place', { skip: !ZuneManager && 'usb module not built' }, async () => {
+  const zm = connectedManager();
+  zm.storageId = 0x10001;
+  zm.transport = { setTransferTimeout: () => {} };
+  const calls = [];
+  zm.mtp = {
+    sendObjectInfo: async (st, parent, info) => { calls.push(['info', info.objectFormat.toString(16), info.filename]); return { objectHandle: 700 }; },
+    sendObject: async (b) => calls.push(['data', b.length]),
+    setObjectPropString: async (h, p, v) => calls.push(['name', h, v]),
+    setObjectReferences: async (h, refs) => calls.push(['refs', h, refs]),
+    syncDeviceDB: async () => calls.push(['sync']),
+  };
+  const made = await zm.savePlaylist('Road Trip: 2024', [11, 12, 13]);
+  assert.deepEqual(made, { handle: 700, updated: false });
+  assert.deepEqual(calls, [['info', 'ba05', 'Road Trip_ 2024.pla'], ['data', 0], ['name', 700, 'Road Trip: 2024'], ['refs', 700, [11, 12, 13]], ['sync']]);
+  calls.length = 0;
+  const upd = await zm.savePlaylist('Road Trip: 2024', [13, 11], 700);
+  assert.deepEqual(upd, { handle: 700, updated: true });
+  assert.deepEqual(calls.slice(0, 1), [['refs', 700, [13, 11]]]);
+  assert.equal(zm.transferring, false);
+});

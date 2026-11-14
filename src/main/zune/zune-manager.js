@@ -942,6 +942,11 @@ class ZuneManager extends EventEmitter {
         });
       }
 
+      // Playlists on the Zune, with their songs (as browse handles)
+      result.playlists = (library.playlists || []).filter(pl => pl.name).map(pl => ({
+        handle: pl.atomId, name: pl.name, trackHandles: pl.trackAtomIds.slice(),
+      }));
+
       return result;
     } catch (err) {
       const elapsed = ((Date.now() - start) / 1000).toFixed(1);
@@ -1810,6 +1815,55 @@ class ZuneManager extends EventEmitter {
       this.transferring = false;
     }
     return { done, errors };
+  }
+
+  /**
+   * Create a playlist on the Zune, or update one (same songs, new order or
+   * contents) when `replaceHandle` is given.
+   * @param {string} name
+   * @param {number[]} trackHandles  browse handles of songs already on the Zune, in order
+   * @returns {{ handle: number, updated: boolean }}
+   */
+  async savePlaylist(name, trackHandles, replaceHandle = null) {
+    if (!this.connected) throw new Error('No Zune device connected');
+    if (this.transferring) throw new Error('Zune is busy receiving songs \u2014 wait for that to finish');
+    this._assertNotPulling();
+    this.transferring = true;
+    try {
+      return await this._withUsbTimeout(20000, async () => {
+        const refs = [];
+        for (const h of trackHandles) {
+          try { refs.push(await this.resolveHandle(h)); } catch (_) { /* song no longer there */ }
+        }
+        if (replaceHandle != null) {
+          try {
+            const real = await this.resolveHandle(replaceHandle);
+            await this.mtp.setObjectReferences(real, refs);
+            try { await this.mtp.setObjectPropString(real, ObjectProperty.Name, name); } catch (_) { /* name unchanged */ }
+            try { await this.mtp.syncDeviceDB(1); } catch (_) { /* updates on its own too */ }
+            console.log(`ZuneManager: updated playlist "${name}" (${refs.length} songs)`);
+            return { handle: replaceHandle, updated: true };
+          } catch (err) {
+            // It may have been deleted on the Zune: make a new one instead
+            console.log(`ZuneManager: couldn't update playlist "${name}" (${err.message}) \u2014 creating it`);
+          }
+        }
+        const safe = String(name).replace(/[<>:"/\\|?*]/g, '_').slice(0, 100) || 'Playlist';
+        const { objectHandle } = await this.mtp.sendObjectInfo(this.storageId, 0, {
+          objectFormat: ObjectFormat.AbstractAudioVideoPlaylist,
+          compressedSize: 0,
+          filename: `${safe}.pla`,
+        });
+        await this.mtp.sendObject(Buffer.alloc(0));
+        try { await this.mtp.setObjectPropString(objectHandle, ObjectProperty.Name, name); } catch (_) { /* filename stands in */ }
+        await this.mtp.setObjectReferences(objectHandle, refs);
+        try { await this.mtp.syncDeviceDB(1); } catch (_) { /* updates on its own too */ }
+        console.log(`ZuneManager: created playlist "${name}" (${refs.length} songs, handle ${objectHandle})`);
+        return { handle: objectHandle, updated: false };
+      });
+    } finally {
+      this.transferring = false;
+    }
   }
 
   async getFile(handle) {

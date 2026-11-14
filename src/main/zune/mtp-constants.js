@@ -65,6 +65,7 @@ const ObjectFormat = {
   WMV:                0xB981,
   MP4:                0xB982,
   AbstractAudioAlbum: 0xBA03,
+  AbstractAudioVideoPlaylist: 0xBA05, // playlist: a name plus references to songs
   PodcastSeries:      0xBA0B, // .ser show object; episodes are ordinary MP3/WMA objects
   Artist:             0xB218,
 };

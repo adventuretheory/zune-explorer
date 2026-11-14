@@ -607,6 +607,66 @@ ipcMain.handle('zune-browse-contents', async () => {
   }
 });
 
+// Lyrics for a song, from LRCLIB (a free, open lyrics library): plain and
+// time-synced (LRC) text. Looked up by title + artist (+ album and length).
+function lrclibGet(url) {
+  return new Promise((resolve, reject) => {
+    const req = require('https').get(url, { headers: { 'User-Agent': 'ZuneExplorer/1.7 (https://github.com/adventuretheory/zune-explorer)' } }, (res) => {
+      let body = '';
+      res.on('data', (c) => { body += c; });
+      res.on('end', () => {
+        if (res.statusCode === 404) return resolve(null);
+        if (res.statusCode !== 200) return reject(new Error(`lyrics service answered ${res.statusCode}`));
+        try { resolve(JSON.parse(body)); } catch { reject(new Error('lyrics service sent something unreadable')); }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(12000, () => { req.destroy(); reject(new Error('lyrics service didn\u2019t answer')); });
+  });
+}
+
+ipcMain.handle('lyrics-get', async (event, info) => {
+  try {
+    const str = (v) => String(v || '').slice(0, 300).trim();
+    const title = str(info?.title), artist = str(info?.artist), album = str(info?.album);
+    const duration = Math.round(Number(info?.duration) || 0);
+    if (!title) return { success: true, found: false };
+    const q = (o) => Object.entries(o).filter(([, v]) => v).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
+    let hit = null;
+    if (artist && duration) {
+      hit = await lrclibGet(`https://lrclib.net/api/get?${q({ track_name: title, artist_name: artist, album_name: album, duration })}`);
+    }
+    if (!hit) {
+      const list = await lrclibGet(`https://lrclib.net/api/search?${q({ track_name: title, artist_name: artist })}`) || [];
+      const usable = list.filter(x => x.plainLyrics || x.syncedLyrics || x.instrumental);
+      // Prefer the one whose length matches the song
+      usable.sort((a, b) => Math.abs((a.duration || 0) - duration) - Math.abs((b.duration || 0) - duration));
+      hit = usable.find(x => !duration || !x.duration || Math.abs(x.duration - duration) <= 8) || null;
+    }
+    if (!hit) return { success: true, found: false };
+    return {
+      success: true, found: true,
+      instrumental: !!hit.instrumental,
+      plain: hit.plainLyrics || '', synced: hit.syncedLyrics || '',
+      title: hit.trackName || title, artist: hit.artistName || artist, album: hit.albumName || '',
+    };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+// Playlists on the Zune: create, or update one with the same name
+ipcMain.handle('zune-save-playlist', async (event, name, trackHandles, replaceHandle) => {
+  try {
+    if (typeof name !== 'string' || !name.trim()) throw new Error('Playlist needs a name');
+    const handles = (Array.isArray(trackHandles) ? trackHandles : []).filter(Number.isInteger);
+    const r = await zuneManager.savePlaylist(name.trim().slice(0, 200), handles, Number.isInteger(replaceHandle) ? replaceHandle : null);
+    return { success: true, ...r };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
 // Change song details directly on the Zune (e.g. remove website names)
 ipcMain.handle('zune-retag', async (event, edits) => {
   try {

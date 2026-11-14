@@ -1010,7 +1010,7 @@ class ZuneSyncPanel {
         this.browseAlbumArtMap = {};
         this.diffActive = false;
         document.getElementById('zune-diff-view').style.display = 'none';
-        this._startFirstTimeScan();
+        return this._startFirstTimeScan();
     }
 
     // Legacy browse for non-diff usage (kept for browse-back compatibility)
@@ -3327,6 +3327,8 @@ class ZuneExplorer {
 
         // Player events
         this.audioPlayer.on('trackchange', (data) => this.onTrackChange(data));
+        // Now Playing → lyrics
+        if (window.LyricsPanel) this.lyricsPanel = new window.LyricsPanel(this);
         this.audioPlayer.on('trackchange', ({ index }) => {
             this.nowPlaying.currentIndex = index;
             this.saveNowPlaying();
@@ -5101,6 +5103,7 @@ class ZuneExplorer {
     openNowPlaying() {
         document.getElementById('now-playing-panel').classList.add('open');
         this.nowPlayingOpen = true;
+        if (this.lyricsPanel?.visible()) this.lyricsPanel.load();
     }
 
     closeNowPlaying() {
@@ -6376,6 +6379,94 @@ class ZuneExplorer {
         }
     }
 
+    /** Fresh Zune list + "which songs are on it", after something changed on the Zune. */
+    async _refreshZuneMembership({ rescan = false } = {}) {
+        if (rescan) await this.zunePanel?._rescanDevice?.();
+        // One already being worked out would be from before the change: wait it out
+        for (let i = 0; this._zuneMembershipLoading && i < 100; i++) await new Promise(r => setTimeout(r, 100));
+        this._zuneMembership = null;
+        await this._loadZuneMembership();
+        return this._zuneMembership;
+    }
+
+    /**
+     * Put a playlist on the Zune: its songs that aren't there yet are sent
+     * first, then the playlist is made (or updated, if one with the same
+     * name is already on the Zune).
+     */
+    async sendPlaylistToZune(playlist) {
+        const zp = this.zunePanel;
+        if (!zp || zp.state !== 'connected' || !zp.browseData) {
+            this.showToast?.('connect your zune (and open it in the zune panel) first');
+            return;
+        }
+        if (this._playlistSending) { this.showToast?.('a playlist is already being sent \u2014 wait for it to finish'); return; }
+        this._playlistSending = true;
+        try {
+            const paths = playlist.tracks.map(t => t.path).filter(p => this.musicLibrary.tracks.has(p));
+            let zm = await this._refreshZuneMembership();
+            const missing = paths.filter(p => !(zm && zm.onZune && zm.onZune.has(p)));
+            if (missing.length) {
+                this.showToast?.(`\u201c${playlist.name}\u201d: sending ${missing.length} song${missing.length === 1 ? '' : 's'} that ${missing.length === 1 ? 'isn\u2019t' : 'aren\u2019t'} on your zune yet\u2026`);
+                let r;
+                for (;;) {
+                    r = await window.electronAPI.zuneSendFiles(missing);
+                    if (r.success || !/in progress|busy/i.test(r.error || '')) break;
+                    await new Promise(res => setTimeout(res, 5000)); // another transfer is running
+                }
+                if (!r.success) throw new Error(r.error || 'sending songs failed');
+                zm = await this._refreshZuneMembership({ rescan: true });
+            }
+            const handles = paths.map(p => zm?.onZune?.get(p)).filter(h => h != null);
+            const left = paths.length - handles.length;
+            const existing = (zp.browseData?.playlists || []).find(p => p.name.trim().toLowerCase() === playlist.name.trim().toLowerCase());
+            this.showToast?.(`making \u201c${playlist.name}\u201d on your zune\u2026`);
+            const res = await window.electronAPI.zuneSavePlaylist(playlist.name, handles, existing ? existing.handle : null);
+            if (!res.success) throw new Error(res.error);
+            this.showToast?.(`\u201c${playlist.name}\u201d is on your zune (${handles.length} song${handles.length === 1 ? '' : 's'})` +
+                (res.updated ? ' \u2014 updated' : '') + (left ? ` \u00b7 ${left} couldn\u2019t be found on the zune` : ''));
+            await this._refreshZuneMembership({ rescan: true });
+        } catch (err) {
+            this.showToast?.(`couldn\u2019t send \u201c${playlist.name}\u201d: ${err.message}`);
+        } finally {
+            this._playlistSending = false;
+        }
+    }
+
+    /** Make a playlist here for each one on the Zune (its songs that are on this computer). */
+    async copyPlaylistsFromZune() {
+        const zp = this.zunePanel;
+        const zunePls = zp?.browseData?.playlists || [];
+        if (!zunePls.length) { this.showToast?.('no playlists on your zune (or it hasn\u2019t been read yet)'); return; }
+        const zm = await this._refreshZuneMembership();
+        const pathOf = new Map();
+        for (const [p, h] of (zm?.onZune || new Map())) pathOf.set(h, p);
+        let made = 0, updated = 0, missingTotal = 0;
+        for (const zpl of zunePls) {
+            const paths = zpl.trackHandles.map(h => pathOf.get(h)).filter(Boolean);
+            missingTotal += zpl.trackHandles.length - paths.length;
+            const tracks = paths.map(p => {
+                const e = this._enrichTrackData({ path: p, name: p.split(/[/\\]/).pop() });
+                return { path: p, title: e.title || '', artist: e.artist, album: e.album, duration: e.duration };
+            });
+            const same = this.playlists.find(p => p.name.trim().toLowerCase() === zpl.name.trim().toLowerCase());
+            if (same) {
+                same.tracks = tracks;
+                same.modifiedAt = new Date().toISOString();
+                await window.electronAPI.playlistSave(same);
+                updated++;
+            } else {
+                const pl = { id: crypto.randomUUID(), name: zpl.name, createdAt: new Date().toISOString(), modifiedAt: new Date().toISOString(), tracks };
+                this.playlists.push(pl);
+                await window.electronAPI.playlistSave(pl);
+                made++;
+            }
+        }
+        this.showToast?.(`${made ? made + ' playlist' + (made === 1 ? '' : 's') + ' copied' : ''}${made && updated ? ', ' : ''}${updated ? updated + ' updated' : ''} from your zune` +
+            (missingTotal ? ` \u00b7 ${missingTotal} song${missingTotal === 1 ? ' is' : 's are'} only on the zune and left out` : ''));
+        if (this.musicSubView === 'playlists' && !this.musicDrillDown) this.renderMusicSubContent();
+    }
+
     /** Settings → cds → burn, with these songs ready to go. */
     openCdBurn(paths) {
         const idx = this.categories.indexOf('settings');
@@ -6816,6 +6907,17 @@ class ZuneExplorer {
         newBtn.addEventListener('click', () => this.createNewPlaylist());
         list.appendChild(newBtn);
 
+        // Playlists made on the Zune can be brought over (to edit here and send back)
+        const zunePls = this.zunePanel?.browseData?.playlists || [];
+        if (zunePls.length) {
+            const fromZune = document.createElement('div');
+            fromZune.className = 'playlist-row new-playlist-row';
+            fromZune.textContent = `\u21e9 copy ${zunePls.length} playlist${zunePls.length === 1 ? '' : 's'} from your zune`;
+            fromZune.title = 'makes a playlist here for each one on your zune (songs that are only on the zune are left out)';
+            fromZune.addEventListener('click', () => this.copyPlaylistsFromZune());
+            list.appendChild(fromZune);
+        }
+
         // Enrich stale playlists from music library
         this.playlists.forEach(p => this._enrichPlaylistTracks(p));
 
@@ -6850,6 +6952,9 @@ class ZuneExplorer {
 
             row.addEventListener('contextmenu', (e) => {
                 this.showDynamicContextMenu(e, [
+                    { label: 'Send Playlist to Zune', action: () => this.sendPlaylistToZune(playlist) },
+                    { label: 'Burn Playlist to CD', action: () => this.openCdBurn(playlist.tracks.map(t => t.path)) },
+                    { separator: true },
                     { label: 'Delete Playlist', action: () => this.deletePlaylist(playlist.id) },
                 ]);
             });

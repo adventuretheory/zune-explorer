@@ -248,10 +248,14 @@
                 </button>
             </div>
 
+            <div class="np-tabs" id="np-tabs">
+                <button class="np-tab active" id="np-tab-queue">up next</button>
+                <button class="np-tab" id="np-tab-lyrics">lyrics</button>
+            </div>
             <div class="np-queue" id="np-queue">
-                <div class="np-queue-header">Up Next</div>
                 <div class="np-queue-list" id="np-queue-list"></div>
             </div>
+            <div class="np-lyrics" id="np-lyrics" style="display:none"></div>
         </div>
     </div>
 
@@ -442,6 +446,8 @@
     <script src="../assets/js/song-fixer-view.js"></script>
     <script src="../shared/media-logic.js"></script>
     <script src="../assets/js/media-view.js"></script>
+    <script src="../shared/lyrics-logic.js"></script>
+    <script src="../assets/js/lyrics-panel.js"></script>
     <script src="../shared/artist-name.js"></script>
     <script src="../shared/podcast-matching.js"></script>
     <script src="../shared/screensaver-motion.js"></script>
