@@ -4542,3 +4542,8 @@ body.zune-panel-open .content-area { padding-right: 372px; }
 /* Quality grades */
 .songs-table-cell.col-kbps.quality-good { color: #cfcfcf; }
 .songs-table-cell.col-kbps.quality-ok { color: #b9a46a; }
+
+/* Fix songs: is this song also on the Zune? */
+.song-fixer-where { display: inline-block; margin-left: 10px; padding: 0 7px; border-radius: 9px; font-size: 11px; line-height: 17px; border: 1px solid #333; }
+.song-fixer-where.where-zune { color: #8fd18f; border-color: rgba(143, 209, 143, 0.4); }
+.song-fixer-where.where-computer { color: #999; }

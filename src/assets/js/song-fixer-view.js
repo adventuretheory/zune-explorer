@@ -43,6 +43,13 @@ class SongFixerView {
     this.items = items;
   }
 
+  /** 'zune' (also on the Zune), 'computer' (only here) or '' when unknown. */
+  _whereOf(path) {
+    const zm = this.explorer._zuneMembership;
+    if (!zm || zm.none) return '';
+    return zm.onZune.has(path) ? 'zune' : 'computer';
+  }
+
   _visible() {
     const q = this.filter.trim().toLowerCase();
     const list = this.items.filter(i =>
@@ -100,6 +107,10 @@ class SongFixerView {
     }
     if (!this.running) this._loadItems();
     try { this.undoInfo = await window.electronAPI.songFixerUndoInfo(); } catch { this.undoInfo = null; }
+    // Which of these songs are also on the Zune (connected, or as of its last scan)
+    if (!this.explorer._zuneMembership && this.explorer._loadZuneMembership) {
+      try { await this.explorer._loadZuneMembership(); } catch { /* shown without it */ }
+    }
     if (this.container !== container) return;
     this._draw();
   }
@@ -356,6 +367,8 @@ class SongFixerView {
       ['not checked yet', visible.filter(i => i.state === 'idle')],
       ['confirmed', visible.filter(i => i.state === 'confirmed')],
       ['no album art', visible.filter(i => !(i.track.albumArtKey || i.track.albumArt))],
+      ['on zune too', visible.filter(i => this._whereOf(i.path) === 'zune')],
+      ['computer only', visible.filter(i => this._whereOf(i.path) === 'computer')],
     ].filter(([, list]) => list.length && list.length < visible.length);
     const selRow = this._el('div', 'song-fixer-quickselect');
     selRow.appendChild(all);
@@ -402,7 +415,17 @@ class SongFixerView {
     const t = item.track;
     info.appendChild(this._el('div', 'zune-diff-title', t.title || item.path.split(/[/\\]/).pop()));
     const meta = `${t.artist || '?'} — ${t.album || '?'}` + (item.reasons.length ? `  ·  ${item.reasons.join(', ')}` : '');
-    info.appendChild(this._el('div', 'zune-diff-meta', meta));
+    const metaEl = this._el('div', 'zune-diff-meta', meta);
+    // Every song here is a file on this computer; say whether the Zune has it too
+    const where = this._whereOf(item.path);
+    if (where) {
+      const tag = this._el('span', 'song-fixer-where where-' + where, where === 'zune' ? 'on zune too' : 'computer only');
+      tag.title = where === 'zune'
+        ? 'this file is on your computer and a copy is on your zune \u2014 after fixing, \u201cupdate zune\u201d puts the fix on the zune'
+        : 'this file is only on your computer, not on your zune';
+      metaEl.appendChild(tag);
+    }
+    info.appendChild(metaEl);
     info.appendChild(this._resultLine(item));
     if (item.state !== 'working' && item.state !== 'applied' && !this.running) {
       if (item.editing) {
