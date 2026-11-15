@@ -292,21 +292,19 @@ class SongFixerView {
     const toArt = selected.filter(i => i.state !== 'working');
     const art = this._el('button', 'zune-sync-btn song-fixer-cleanup-btn', `add album art (${toArt.length})`);
     art.disabled = toArt.length === 0;
-    art.title = 'finds each song\u2019s cover online (MusicBrainz / Cover Art Archive) and adds it to the file; songs that already have art are skipped';
+    art.title = 'finds each song\u2019s cover (from the same album, MusicBrainz, Apple or Deezer; else the artist\u2019s photo or a made cover) and adds it to the file; songs that already have art are skipped';
     art.addEventListener('click', async () => {
       this.running = true;
       this.stopRequested = false;
       this._refreshActions();
       const r = await this.explorer.addAlbumArt(toArt.map(i => i.path), {
-      shouldStop: () => this.stopRequested,
+        shouldStop: () => this.stopRequested,
+        standIns: this._standInsOn(),
         onProgress: (n, total) => this._setStatus(`looking for album art: ${n} of ${total}\u2026`),
       });
       this.running = false;
       if (r) {
-        const why = [...new Set(r.reasons)].slice(0, 2).join('; ');
-        this._setStatus(`album art added to ${r.added} song${r.added === 1 ? '' : 's'}` + (r.stopped ? ' (stopped)' : '') +
-          (r.skipped + r.failed ? `, ${r.skipped + r.failed} not changed (${why})` : '') + '.' +
-          (r.added ? ' to put it on your zune, press \u201cupdate zune\u201d in its music list.' : ''));
+        this._setStatus(r.summary + '.' + (r.added ? ' to put it on your zune, press \u201cupdate zune\u201d in its music list.' : ''));
       }
       try { this.undoInfo = await window.electronAPI.songFixerUndoInfo(); } catch {}
       await new Promise(res => setTimeout(res, 300));
@@ -842,8 +840,17 @@ class SongFixerView {
         .sort((x, y) => String(x.track.artist || '').localeCompare(String(y.track.artist || '')) || String(x.track.album || '').localeCompare(String(y.track.album || '')));
       const ticked = shown.filter(i => !this.artSkip.has(i.path));
       sec.appendChild(this._el('div', 'song-fixer-note',
-        `${missing.length} song${missing.length === 1 ? ' has' : 's have'} no album art. \u201cfind online\u201d looks each one up by artist and album ` +
-        '(fix wrong or missing album names first for the best results); \u201cset from an image\u201d puts a picture you choose on the ticked songs.'));
+        `${missing.length} song${missing.length === 1 ? ' has' : 's have'} no album art. \u201cfind album art\u201d uses a cover from another song on the same album, ` +
+        'else looks it up by artist and album on musicbrainz, apple and deezer. not found? \u201csearch the web\u201d on a song opens an image search: ' +
+        'right-click the right cover, \u201cCopy Image\u201d, then press \u201cpaste\u201d. \u201cset from an image\u201d puts a picture file on the ticked songs.'));
+      const opt = this._el('label', 'zune-diff-select-all');
+      const optBox = this._el('input');
+      optBox.type = 'checkbox';
+      optBox.checked = this._standInsOn();
+      optBox.disabled = this.running;
+      optBox.addEventListener('change', () => { try { localStorage.setItem('fixer-art-standins', optBox.checked ? 'on' : 'off'); } catch { /* this session */ } });
+      opt.append(optBox, document.createTextNode('if no real cover is found: use the artist\u2019s photo; else identify the song by sound and look again; else make a simple cover'));
+      sec.appendChild(opt);
       const filter = this._el('input', 'zune-diff-filter-input');
       filter.placeholder = 'filter by song, artist or album\u2026';
       filter.value = this.artFilter || '';
@@ -859,14 +866,18 @@ class SongFixerView {
         bar.appendChild(stop);
       }
       if (!this.running) {
-        const find = this._el('button', 'zune-sync-btn zune-push-btn', `find album art online (${ticked.length})`);
+        const find = this._el('button', 'zune-sync-btn zune-push-btn', `find album art (${ticked.length})`);
         find.disabled = !ticked.length;
-        find.addEventListener('click', () => this._addArt(ticked, false));
+        find.addEventListener('click', () => this._addArt(ticked, {}));
+        const paste = this._el('button', 'zune-sync-btn song-fixer-cleanup-btn', `paste copied picture (${ticked.length})`);
+        paste.disabled = !ticked.length;
+        paste.title = 'put the picture you copied (e.g. from a web image search) on the ticked songs';
+        paste.addEventListener('click', () => this._addArt(ticked, { fromClipboard: true }));
         const pick = this._el('button', 'zune-sync-btn song-fixer-cleanup-btn', `set from an image\u2026 (${ticked.length})`);
         pick.disabled = !ticked.length;
         pick.title = 'choose a picture on your computer and put it on the ticked songs (e.g. one album)';
-        pick.addEventListener('click', () => this._addArt(ticked, true));
-        bar.append(find, pick);
+        pick.addEventListener('click', () => this._addArt(ticked, { pickImage: true }));
+        bar.append(find, paste, pick);
       }
       sec.appendChild(bar);
 
@@ -890,7 +901,7 @@ class SongFixerView {
         const info = this._el('div', 'zune-diff-info');
         info.appendChild(this._el('div', 'zune-diff-title', it.track.title || it.path.split(/[/\\]/).pop()));
         info.appendChild(this._el('div', 'zune-diff-meta', `${it.track.artist || '?'} \u2014 ${it.track.album || 'no album'}`));
-        row.append(box, this._playButton(it.path), info);
+        row.append(box, this._playButton(it.path), info, this._coverButtons(it.path));
         row.addEventListener('contextmenu', (e) => this._songMenu(e, it.path));
         sec.appendChild(row);
       }
@@ -901,31 +912,98 @@ class SongFixerView {
       }
     }
     c.appendChild(sec);
+    this._drawStandIns(c);
     this._drawCoverCheck(c);
   }
 
-  async _addArt(items, pickImage) {
+  async _addArt(items, how = {}) {
+    if (typeof how === 'boolean') how = { pickImage: how };
     this.running = true;
     this.stopRequested = false;
     this._draw();
+    const given = how.pickImage || how.fromClipboard;
     const r = await this.explorer.addAlbumArt(items.map(i => i.path), {
       shouldStop: () => this.stopRequested,
-      pickImage,
-      onProgress: (n, total) => this._setStatus(`${pickImage ? 'adding the picture' : 'looking for album art'}: ${n} of ${total}\u2026`),
+      standIns: this._standInsOn(),
+      ...how,
+      onProgress: (n, total) => this._setStatus(`${given ? 'adding the picture' : how.realOnly ? 'looking for the real album art' : 'looking for album art'}: ${n} of ${total}\u2026`),
     });
     this.running = false;
     if (r) {
-      const why = [...new Set(r.reasons)].slice(0, 2).join('; ');
-      this.status = `album art added to ${r.added} song${r.added === 1 ? '' : 's'}` + (r.stopped ? ' (stopped)' : '') +
-        (r.skipped + r.failed ? `, ${r.skipped + r.failed} not changed (${why})` : '') + '.' +
-        (r.added ? ' press \u201cupdate zune\u201d in its music list to put it on your zune.' : '');
+      this.status = r.summary + '.' + (r.added ? ' press \u201cupdate zune\u201d in its music list to put it on your zune.' : '');
     } else {
       this.status = '';
     }
     try { this.undoInfo = await window.electronAPI.songFixerUndoInfo(); } catch {}
     await new Promise(res => setTimeout(res, 400));
+    await this._loadStandIns();
     this._loadItems();
     this._draw();
+  }
+
+  /** "if no real cover is found, use a stand-in" (on unless turned off). */
+  _standInsOn() {
+    try { return localStorage.getItem('fixer-art-standins') !== 'off'; } catch { return true; }
+  }
+
+  /** Songs whose cover is the artist's photo or a made cover: { path: kind }. */
+  async _loadStandIns() {
+    try { const r = await window.electronAPI.songFixerStandIns(); this.standIns = r?.success ? r.standIns : {}; } catch { this.standIns = {}; }
+  }
+
+  /** Songs with a stand-in cover, and a way to look again for the real one. */
+  _drawStandIns(c) {
+    if (!this.standIns) { this._loadStandIns().then(() => { if (this.container?.isConnected && this.mode === 'art' && Object.keys(this.standIns).length) this._draw(); }); return; }
+    const lib = this.explorer.musicLibrary.tracks;
+    const list = Object.entries(this.standIns).filter(([p]) => lib.has(p));
+    if (!list.length) return;
+    const sec = this._el('div', 'song-fixer-sites');
+    sec.appendChild(this._el('h3', 'song-fixer-sites-head', 'stand-in covers'));
+    const photos = list.filter(([, k]) => k === 'artist').length;
+    const made = list.length - photos;
+    sec.appendChild(this._el('div', 'song-fixer-note',
+      `${list.length} song${list.length === 1 ? ' has' : 's have'} a stand-in cover because no real one was found` +
+      ` (${[photos ? `${photos} artist photo${photos === 1 ? '' : 's'}` : '', made ? `${made} made cover${made === 1 ? '' : 's'}` : ''].filter(Boolean).join(', ')}). ` +
+      'after fixing a song\u2019s name, or some time later, look again: only a real album cover replaces a stand-in.'));
+    if (!this.running) {
+      const bar = this._el('div', 'zune-diff-actions');
+      const again = this._el('button', 'zune-sync-btn zune-push-btn', `look again for real covers (${list.length})`);
+      again.addEventListener('click', () => this._addArt(list.map(([p]) => ({ path: p })), { realOnly: true, replace: true }));
+      bar.appendChild(again);
+      sec.appendChild(bar);
+    }
+    const shown = list.map(([p, k]) => ({ path: p, kind: k, track: lib.get(p) }))
+      .sort((x, y) => String(x.track.artist || '').localeCompare(String(y.track.artist || '')) || String(x.track.album || '').localeCompare(String(y.track.album || '')));
+    if (!this.standInLimit) this.standInLimit = 20;
+    for (const it of shown.slice(0, this.standInLimit)) {
+      const row = this._el('div', 'zune-diff-item song-fixer-row');
+      const info = this._el('div', 'zune-diff-info');
+      info.appendChild(this._el('div', 'zune-diff-title', it.track.title || it.path.split(/[/\\]/).pop()));
+      info.appendChild(this._el('div', 'zune-diff-meta', `${it.track.artist || '?'} \u2014 ${it.track.album || 'no album'} \u00b7 ${it.kind === 'artist' ? 'artist photo' : 'made cover'}`));
+      row.append(this._playButton(it.path), info, this._coverButtons(it.path));
+      row.addEventListener('contextmenu', (e) => this._songMenu(e, it.path));
+      sec.appendChild(row);
+    }
+    if (shown.length > this.standInLimit) {
+      const more = this._el('button', 'song-fixer-link song-fixer-more', `show more (${shown.length - this.standInLimit} left)`);
+      more.addEventListener('click', () => { this.standInLimit += 50; this._draw(); });
+      sec.appendChild(more);
+    }
+    c.appendChild(sec);
+  }
+
+  /** "search the web" and "paste" for one song: find a cover in the browser, copy it, paste it here. */
+  _coverButtons(path) {
+    const box = this._el('div', 'song-fixer-cover-btns');
+    const web = this._el('button', 'song-fixer-link', 'search the web');
+    web.title = 'opens an image search for this album in your browser \u2014 right-click the right cover, \u201cCopy Image\u201d, then press \u201cpaste\u201d here';
+    web.addEventListener('click', () => this.explorer.searchCoverOnline(path));
+    const paste = this._el('button', 'song-fixer-link', 'paste');
+    paste.title = 'put the picture you copied on this song';
+    paste.disabled = !!this.running;
+    paste.addEventListener('click', () => this._addArt([{ path }], { fromClipboard: true }));
+    box.append(web, paste);
+    return box;
   }
 
   /** Website logos / one picture on many albums: find, remove, then look up real covers. */
@@ -1234,19 +1312,19 @@ class SongFixerView {
     this._draw();
     const r = await this.explorer.addAlbumArt(paths, {
       shouldStop: () => this.stopRequested,
+      standIns: this._standInsOn(),
       onProgress: (n, total) => this._setStatus(`looking for album art: ${n} of ${total}…`),
     });
     this.findingRealArt = false;
     this.running = false;
     if (r) {
-      const why = [...new Set(r.reasons)].slice(0, 2).join('; ');
-      this._setStatus(`album art found for ${r.added} song${r.added === 1 ? '' : 's'}` + (r.stopped ? ' (stopped)' : '') +
-        (r.skipped + r.failed ? `, ${r.skipped + r.failed} without (${why})` : '') + '.' +
+      this._setStatus(r.summary + '.' +
         ' press “update zune” in the zune music list to put the changes on your zune.');
       this.coverRemovedPaths = [];
     }
     try { this.undoInfo = await window.electronAPI.songFixerUndoInfo(); } catch {}
     await this._refreshArt(paths);
+    await this._loadStandIns();
     this._draw();
   }
 

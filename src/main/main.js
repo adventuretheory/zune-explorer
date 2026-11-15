@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs').promises;
 const os = require('os');
@@ -19,6 +19,7 @@ const { detectInstallType, importLegacyFiles } = require('./preferences-migratio
 
 const execFileAsync = promisify(execFile);
 const ffmpegPath = require('ffmpeg-static');
+const { CoverFinder, isImage: isCoverImage } = require('./cover-finder');
 
 const zuneManager = new ZuneManager();
 let deviceCache = null; // initialized after app.whenReady
@@ -27,6 +28,7 @@ let songFixer;
 let mediaTools; // import new music, rip and burn CDs
 const { MediaTools } = require('./media-tools.js');
 let artistImages = null;
+let coverFinder = null;
 let podcastManager = null;
 
 // Simple dev mode detection
@@ -118,7 +120,29 @@ app.whenReady().then(async () => {
     trashItem: (p) => shell.trashItem(p),
     musicbrainz,
     coverForRelease: (id) => coverForRelease(id),
-    findAlbumArt: (info) => findAlbumArt(info),
+    findAlbumArt: (info) => coverFinder.online(info || {}).then(r => r && r.image),
+  });
+  coverFinder = new CoverFinder({
+    fetchJson: musicbrainz.fetchJsonUnlimited,
+    fetchBinary: musicbrainz.fetchUnlimited,
+    musicbrainzCover: (info) => findAlbumArt(info),
+    readCover: (p) => songFixer.readCover(p),
+    artistPhoto: async (name) => {
+      const r = artistImages && await artistImages.find(name);
+      if (!r || !r.url) return null;
+      return fs.readFile(require('url').fileURLToPath(r.url.split('?')[0]));
+    },
+    identify: async (p) => {
+      const key = (preferences.get('songFixer.acoustidKey') || '').trim();
+      let timer;
+      const r = await Promise.race([
+        songFixer.identify(p, key, {}),
+        new Promise((resolve) => { timer = setTimeout(() => resolve(null), 90000); }),
+      ]).finally(() => clearTimeout(timer));
+      return (r && r.proposal) || null;
+    },
+    releaseGroupCover: async (id) => (await songFixer._fetchCover(id))?.data || null,
+    toJpeg: (buf) => imageToJpeg(buf),
   });
   artistImages = new ArtistImages(app.getPath('userData'), {
     searchArtists: musicbrainz.searchArtists,
@@ -1567,26 +1591,71 @@ async function findAlbumArt({ title, artist, album }) {
   return null;
 }
 
-// Add album art to one song: from an image file the person picked, or found online
+// Any picture (e.g. a WebP artist photo) as a JPEG, via ffmpeg. null if it can't be read.
+function imageToJpeg(buf) {
+  return new Promise((resolve) => {
+    const { spawn } = require('child_process');
+    const proc = spawn(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-i', 'pipe:0', '-frames:v', '1', '-vf', "scale='min(1000,iw)':-2", '-q:v', '3', '-f', 'mjpeg', 'pipe:1'], { timeout: 20000 });
+    const out = [];
+    proc.stdout.on('data', (c) => out.push(c));
+    proc.on('error', () => resolve(null));
+    proc.on('close', (code) => resolve(code === 0 ? Buffer.concat(out) : null));
+    proc.stdin.on('error', () => {});
+    proc.stdin.end(buf);
+  });
+}
+
+// A big picture made smaller for the Zune (at most 1000 pixels across), as JPEG
+function shrinkForZune(img) {
+  const { width, height } = img.getSize();
+  if (width > 1000 || height > 1000) img = img.resize(width >= height ? { width: 1000 } : { height: 1000 });
+  return img.toJPEG(90);
+}
+
+ipcMain.handle('song-fixer-standins-get', async () => {
+  try { return { success: true, standIns: await songFixer.standInsGet() }; } catch (error) { return { success: false, error: error.message }; }
+});
+
+// Add album art to one song: from an image file the person picked, a picture
+// they copied, a cover made in the window, or found (same album, online,
+// artist's photo, identify by sound)
 ipcMain.handle('song-fixer-add-art', async (event, batchId, filePath, info, opts) => {
   try {
     if (!/^\d+$/.test(String(batchId))) throw new Error('Bad batch id');
     if (typeof filePath !== 'string' || !isAllowedPath(filePath)) throw new Error('Path not allowed');
     let image = null;
+    let source = 'image';
+    let standIn = null;
+    let names = null;
     if (opts?.imagePath) {
       if (typeof opts.imagePath !== 'string') throw new Error('Bad image');
       image = await fs.readFile(opts.imagePath);
+    } else if (opts?.fromClipboard) {
+      const img = clipboard.readImage();
+      if (img.isEmpty()) throw new Error('no picture copied \u2014 right-click the cover in your browser, choose \u201cCopy Image\u201d, then paste again');
+      image = shrinkForZune(img);
+      source = 'pasted';
+    } else if (opts?.imageData) {
+      image = Buffer.from(opts.imageData);
+      if (image.length > 8 * 1024 * 1024 || !isCoverImage(image)) throw new Error('Bad image');
+      if (opts.standIn === 'made') { standIn = 'made'; source = 'made'; }
     } else {
       // Skip the lookup for songs that already have art (unless replacing)
       if (!opts?.replace) {
         const tags = await songFixer.readTags(filePath).catch(() => null);
         if (tags?.hasCover) return { success: true, added: false, skipped: 'already has album art' };
       }
-      image = await findAlbumArt(info || {});
-      if (!image) return { success: true, added: false, skipped: 'no album art found online' };
+      const siblings = Array.isArray(opts?.siblings)
+        ? opts.siblings.filter(p => typeof p === 'string' && p !== filePath && isAllowedPath(p)).slice(0, 3) : [];
+      const found = await coverFinder.find(info || {}, { path: filePath, siblings, standIns: !!opts?.standIns });
+      if (!found) return { success: true, added: false, skipped: 'no album art found online' };
+      if (found.needsMade) return { success: true, added: false, needsMade: true };
+      ({ image, source } = found);
+      standIn = found.standIn || null;
+      if (found.names) names = { title: found.names.title || '', artist: found.names.artist || '', album: found.names.album || '' };
     }
-    const r = await songFixer.addCover(String(batchId), filePath, image, { replace: !!opts?.replace });
-    return { success: true, ...r };
+    const r = await songFixer.addCover(String(batchId), filePath, image, { replace: !!opts?.replace, standIn });
+    return { success: true, ...r, source, names };
   } catch (error) {
     return { success: false, error: error.message };
   }

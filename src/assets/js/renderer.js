@@ -4492,6 +4492,8 @@ class ZuneExplorer {
         const n = paths.length === 1 ? '' : ` (${paths.length} songs)`;
         items.push({ label: `Find Album Art Online${n}`, action: () => this.addAlbumArt(paths) });
         items.push({ label: `Set Album Art from Image\u2026${n}`, action: () => this.addAlbumArt(paths, { pickImage: true }) });
+        if (paths.length === 1) items.push({ label: 'Search the Web for Album Art', action: () => this.searchCoverOnline(paths[0]) });
+        items.push({ label: `Paste Album Art${n}`, action: () => this.addAlbumArt(paths, { fromClipboard: true }) });
         if (albumPaths.length > 1) {
             items.push({ label: `Set Album Art for \u201c${t.album}\u201d (${albumPaths.length} songs)\u2026`, action: () => this.addAlbumArt(albumPaths, { pickImage: true, replace: true }) });
         }
@@ -4503,36 +4505,183 @@ class ZuneExplorer {
     }
 
     /**
-     * Add cover art to songs: from an image the person picks, or looked up
-     * online. Returns { added, skipped, failed, reasons }.
+     * Add cover art to songs. With pickImage: a picture the person chooses;
+     * with fromClipboard: a picture they copied (e.g. from a web image search).
+     * Otherwise each song is looked up: another song from the same album, then
+     * online (MusicBrainz, Apple, Deezer). With standIns (the default), songs
+     * still without art get the artist's photo, else are identified by sound
+     * and looked up again, else get a simple made cover. realOnly: only real
+     * covers (used to replace stand-ins later).
+     * Returns { added, skipped, failed, reasons, sources, stopped }.
      */
-    async addAlbumArt(paths, { pickImage = false, replace = false, onProgress, shouldStop } = {}) {
+    async addAlbumArt(paths, { pickImage = false, fromClipboard = false, replace = false, standIns = true, realOnly = false, onProgress, shouldStop } = {}) {
         let imagePath = null;
         if (pickImage) {
             imagePath = await window.electronAPI.pickImage();
             if (!imagePath) return null;
             replace = true; // a picked image is a deliberate choice
         }
+        if (fromClipboard) replace = true;
+        const lookup = !imagePath && !fromClipboard;
+        if (realOnly) standIns = false;
         const batchId = String(Date.now());
-        const out = { added: 0, skipped: 0, failed: 0, reasons: [] };
+        const out = { added: 0, skipped: 0, failed: 0, reasons: [], sources: {}, stopped: false };
         const done = [];
+
+        // Songs whose cover is only a stand-in don't count as "the album's cover"
+        let stand = {};
+        if (lookup) {
+            try { const r = await window.electronAPI.songFixerStandIns(); if (r?.success) stand = r.standIns || {}; } catch { /* none */ }
+        }
+        const albumKey = (t) => {
+            const al = String(t.album || '').trim().toLowerCase();
+            if (!al || /^unknown album$/.test(al)) return '';
+            return `${String(t.albumArtist || t.artist || '').trim().toLowerCase()}\u0000${al}`;
+        };
+        const withArt = new Map(); // album key -> paths of songs with a real cover
+        const want = new Set(paths);
+        if (lookup) {
+            const keys = new Set(paths.map(p => albumKey(this.musicLibrary.tracks.get(p) || {})).filter(Boolean));
+            for (const [p, t] of this.musicLibrary.tracks) {
+                if (!(t.albumArtKey || t.albumArt) || stand[p] || (want.has(p) && replace)) continue;
+                const k = albumKey(t);
+                if (!keys.has(k)) continue;
+                if (!withArt.has(k)) withArt.set(k, []);
+                withArt.get(k).push(p);
+            }
+        }
+
         for (let i = 0; i < paths.length; i++) {
             if (shouldStop?.()) { out.stopped = true; break; } // stop button: finish this song, then stop
             const p = paths[i];
             const t = this.musicLibrary.tracks.get(p) || {};
             onProgress?.(i + 1, paths.length);
-            if (!onProgress && paths.length > 1) this.showToast?.(`album art: ${i + 1} of ${paths.length}\u2026`);
-            const res = await window.electronAPI.songFixerAddArt(batchId, p, { title: t.title, artist: t.albumArtist || t.artist, album: t.album }, { imagePath, replace });
-            if (!res.success) { out.failed++; out.reasons.push(res.error); }
-            else if (res.added) { out.added++; done.push(p); }
-            else { out.skipped++; if (res.skipped) out.reasons.push(res.skipped); }
+            if (!onProgress && paths.length > 1) this.showToast?.(`album art: ${i + 1} of ${paths.length}…`);
+            const info = { title: t.title, artist: t.albumArtist || t.artist, album: t.album };
+            const k = albumKey(t);
+            let res = await window.electronAPI.songFixerAddArt(batchId, p, info,
+                { imagePath, fromClipboard, replace, siblings: lookup ? (withArt.get(k) || []) : undefined, standIns: lookup && standIns });
+            if (res.success && res.needsMade) {
+                try {
+                    const imageData = await this.makeCover(t);
+                    res = await window.electronAPI.songFixerAddArt(batchId, p, info, { imageData, standIn: 'made', replace });
+                } catch (e) { res = { success: false, error: e.message }; }
+            }
+            if (!res.success) {
+                out.failed++; out.reasons.push(res.error);
+                if (fromClipboard) break; // nothing copied: the same for every song
+            } else if (res.added) {
+                out.added++; done.push(p);
+                const src = res.source || 'image';
+                out.sources[src] = (out.sources[src] || 0) + 1;
+                // A real cover now serves the rest of its album
+                if (k && !['artist', 'made'].includes(src)) {
+                    if (!withArt.has(k)) withArt.set(k, []);
+                    withArt.get(k).unshift(p);
+                }
+            } else { out.skipped++; if (res.skipped) out.reasons.push(res.skipped); }
         }
         if (done.length) await window.electronAPI.batchScanAudioMetadata(done, { includeArt: true });
-        const why = [...new Set(out.reasons)].slice(0, 2).join('; ');
-        this.showToast?.(`album art added to ${out.added} song${out.added === 1 ? '' : 's'}` +
-            (out.skipped + out.failed ? ` \u00b7 ${out.skipped + out.failed} not changed (${why})` : '') +
-            (out.added ? ' \u00b7 press \u201cupdate zune\u201d to put it on your zune' : ''));
+        out.summary = this.albumArtSummary(out);
+        this.showToast?.(out.summary + (out.added ? ' · press “update zune” to put it on your zune' : ''));
         return out;
+    }
+
+    /** "album art added to 12 songs: 8 found online, 3 from the same album, 1 made cover · 2 not changed (…)" */
+    albumArtSummary(r) {
+        const labels = [
+            ['album', 'from the same album'], ['musicbrainz', 'from musicbrainz'], ['apple', 'from apple'], ['deezer', 'from deezer'],
+            ['sound', 'after identifying the song by sound'], ['artist', 'artist photo'], ['made', 'made cover'],
+        ];
+        const parts = [];
+        for (const [k, label] of labels) {
+            const n = r.sources?.[k];
+            if (!n) continue;
+            parts.push(k === 'artist' || k === 'made' ? `${n} ${label}${n === 1 ? '' : 's'}` : `${n} ${label}`);
+        }
+        const why = [...new Set(r.reasons || [])].slice(0, 2).join('; ');
+        return `album art added to ${r.added} song${r.added === 1 ? '' : 's'}` +
+            (parts.length && Object.keys(r.sources).some(k => !['image', 'pasted'].includes(k)) ? `: ${parts.join(', ')}` : '') +
+            (r.stopped ? ' (stopped)' : '') +
+            (r.skipped + r.failed ? ` · ${r.skipped + r.failed} not changed (${why})` : '');
+    }
+
+    /**
+     * A simple Zune-style cover for a song nothing else could be found for:
+     * the album (or song) name and artist on a colour gradient. The same
+     * album always gets the same cover. Resolves to JPEG bytes.
+     */
+    async makeCover(t) {
+        const S = 600;
+        const cv = document.createElement('canvas');
+        cv.width = cv.height = S;
+        const g = cv.getContext('2d');
+        const album = String(t.album && !/^unknown album$/i.test(t.album) ? t.album : (t.title || '')).trim();
+        const artist = String(t.albumArtist || t.artist || '').trim();
+        const name = (album || 'unknown').toLowerCase();
+        let h = 0;
+        for (const ch of name + artist) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+        const palettes = [['#ff6900', '#e3008c'], ['#e3008c', '#6b2fbf'], ['#ff2d55', '#ff6900'], ['#00a3e0', '#6b2fbf'], ['#00b294', '#0063b1'], ['#ff8c00', '#d4145a']];
+        const [c1, c2] = palettes[h % palettes.length];
+        const grad = g.createLinearGradient(0, 0, S, S);
+        grad.addColorStop(0, c1);
+        grad.addColorStop(1, c2);
+        g.fillStyle = grad;
+        g.fillRect(0, 0, S, S);
+        // a soft darker band at the bottom so the words read well
+        const shade = g.createLinearGradient(0, S * 0.45, 0, S);
+        shade.addColorStop(0, 'rgba(0,0,0,0)');
+        shade.addColorStop(1, 'rgba(0,0,0,0.45)');
+        g.fillStyle = shade;
+        g.fillRect(0, 0, S, S);
+
+        const font = '"Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif';
+        const pad = 44;
+        const wrap = (text, size, maxLines) => {
+            g.font = `600 ${size}px ${font}`;
+            const words = text.split(/\s+/).filter(Boolean);
+            const lines = [];
+            let line = '';
+            for (const w of words) {
+                const next = line ? line + ' ' + w : w;
+                if (g.measureText(next).width <= S - pad * 2 || !line) line = next;
+                else { lines.push(line); line = w; }
+            }
+            if (line) lines.push(line);
+            if (lines.length > maxLines) {
+                lines.length = maxLines;
+                let last = lines[maxLines - 1];
+                while (last && g.measureText(last + '…').width > S - pad * 2) last = last.slice(0, -1);
+                lines[maxLines - 1] = last + '…';
+            }
+            return lines;
+        };
+        let size = 84;
+        let lines = wrap(name, size, 3);
+        while (size > 44 && (lines.length > 3 || lines.some(l => g.measureText(l).width > S - pad * 2))) { size -= 6; lines = wrap(name, size, 3); }
+        g.fillStyle = '#ffffff';
+        g.textBaseline = 'alphabetic';
+        const artistSize = 34;
+        let y = S - pad - (artist ? artistSize + 18 : 0) - (lines.length - 1) * size * 1.02;
+        g.font = `600 ${size}px ${font}`;
+        for (const l of lines) { g.fillText(l, pad - 3, y); y += size * 1.02; }
+        if (artist) {
+            g.font = `400 ${artistSize}px ${font}`;
+            g.fillStyle = 'rgba(255,255,255,0.85)';
+            let a = artist.toLowerCase();
+            while (a.length > 1 && g.measureText(a).width > S - pad * 2) a = a.slice(0, -2) + '…';
+            g.fillText(a, pad, S - pad);
+        }
+        const blob = await new Promise((res, rej) => cv.toBlob(b => (b ? res(b) : rej(new Error('couldn’t make a cover'))), 'image/jpeg', 0.9));
+        return new Uint8Array(await blob.arrayBuffer());
+    }
+
+    /** Search the web for this song's album cover (in the browser), to copy and paste back here. */
+    searchCoverOnline(path) {
+        const t = this.musicLibrary.tracks.get(path) || {};
+        const album = t.album && !/^unknown album$/i.test(t.album) ? t.album : t.title;
+        const q = `${t.albumArtist || t.artist || ''} ${album || ''} album cover`.trim();
+        window.electronAPI.openExternal(`https://duckduckgo.com/?q=${encodeURIComponent(q)}&iax=images&ia=images`);
     }
 
     /**

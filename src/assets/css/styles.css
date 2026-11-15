@@ -4641,3 +4641,14 @@ body.zune-edge-shown .scroll-top-btn { right: 96px; }
 body.zune-panel-open .scroll-top-btn { right: 396px; }
 
 .song-row-check { margin: 0; accent-color: var(--zune-orange, #ff6900); cursor: pointer; }
+
+/* Album art tab: per-song "search the web" / "paste" */
+.song-fixer-cover-btns {
+  display: flex;
+  gap: 14px;
+  margin-left: auto;
+  flex-shrink: 0;
+  align-items: center;
+  padding-left: 12px;
+}
+.song-fixer-cover-btns .song-fixer-link:disabled { opacity: 0.4; cursor: default; }

@@ -230,6 +230,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   songFixerConfirmedAdd: (paths) => ipcRenderer.invoke('song-fixer-confirmed-add', paths),
   songFixerTrash: (paths, opts) => ipcRenderer.invoke('song-fixer-trash', paths, opts),
   songFixerAddArt: (batchId, filePath, info, opts) => ipcRenderer.invoke('song-fixer-add-art', batchId, filePath, info, opts),
+  songFixerStandIns: () => ipcRenderer.invoke('song-fixer-standins-get'),
   importScan: (folders, libraryFolders) => ipcRenderer.invoke('import-scan', folders, libraryFolders),
   importFiles: (items, musicRoot, opts) => ipcRenderer.invoke('import-files', items, musicRoot, opts),
   importIgnore: (paths) => ipcRenderer.invoke('import-ignore', paths),

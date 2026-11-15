@@ -787,7 +787,46 @@ class SongFixer {
    * @param {Buffer} image  JPEG or PNG bytes
    * @returns {{ added: boolean, skipped?: string }}
    */
-  async addCover(batchId, filePath, image, { replace = false } = {}) {
+  /** The cover picture inside a song file, as bytes (or null). */
+  async readCover(filePath) {
+    const { parseFile } = await import('music-metadata');
+    let timer;
+    const md = await Promise.race([
+      parseFile(filePath, { duration: false, skipCovers: false }),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timeout')), 15000); }),
+    ]).finally(() => clearTimeout(timer));
+    const pic = md.common.picture && md.common.picture[0];
+    return pic ? Buffer.from(pic.data) : null;
+  }
+
+  // ---- Stand-in covers (the artist's photo, or a made cover) ---------------
+
+  _standInFile() { return path.join(this.undoDir, 'stand-in-covers.json'); }
+
+  /** { path: 'artist' | 'made' } for songs whose cover is still a stand-in. */
+  async standInsGet() {
+    let saved = {};
+    try { saved = JSON.parse(await fs.readFile(this._standInFile(), 'utf8')); } catch { /* none yet */ }
+    const out = {};
+    // Kept until a real cover is put on the song (tag fixes don't clear it)
+    for (const [p, e] of Object.entries(saved)) if (e && e.kind && await this._fileSig(p)) out[p] = e.kind;
+    return out;
+  }
+
+  async _standInSet(filePath, kind) {
+    this._standInQueue = (this._standInQueue || Promise.resolve()).then(async () => {
+      let saved = {};
+      try { saved = JSON.parse(await fs.readFile(this._standInFile(), 'utf8')); } catch { /* none yet */ }
+      if (kind) saved[filePath] = { kind };
+      else if (!(filePath in saved)) return;
+      else delete saved[filePath];
+      await fs.mkdir(this.undoDir, { recursive: true });
+      await fs.writeFile(this._standInFile(), JSON.stringify(saved));
+    }).catch(() => {});
+    return this._standInQueue;
+  }
+
+  async addCover(batchId, filePath, image, { replace = false, standIn = null } = {}) {
     const ext = path.extname(filePath).toLowerCase();
     if (!['.mp3', '.m4a', '.mp4', '.flac'].includes(ext)) {
       throw new Error(`album art can't be added to ${ext.replace('.', '').toUpperCase()} files`);
@@ -806,6 +845,7 @@ class SongFixer {
     if (outcome.coverSkipped) throw new Error('this image couldn\u2019t be added to the file');
     await this._record(batchId, { path: filePath, before: {}, addedCover: !current.hasCover });
     await this._addPending(filePath, current, { artChanged: true });
+    await this._standInSet(filePath, standIn === 'artist' || standIn === 'made' ? standIn : null);
     return { added: true };
   }
 
