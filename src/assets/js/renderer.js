@@ -4506,7 +4506,7 @@ class ZuneExplorer {
      * Add cover art to songs: from an image the person picks, or looked up
      * online. Returns { added, skipped, failed, reasons }.
      */
-    async addAlbumArt(paths, { pickImage = false, replace = false, onProgress } = {}) {
+    async addAlbumArt(paths, { pickImage = false, replace = false, onProgress, shouldStop } = {}) {
         let imagePath = null;
         if (pickImage) {
             imagePath = await window.electronAPI.pickImage();
@@ -4517,6 +4517,7 @@ class ZuneExplorer {
         const out = { added: 0, skipped: 0, failed: 0, reasons: [] };
         const done = [];
         for (let i = 0; i < paths.length; i++) {
+            if (shouldStop?.()) { out.stopped = true; break; } // stop button: finish this song, then stop
             const p = paths[i];
             const t = this.musicLibrary.tracks.get(p) || {};
             onProgress?.(i + 1, paths.length);

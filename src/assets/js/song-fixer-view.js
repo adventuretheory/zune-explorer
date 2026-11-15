@@ -295,14 +295,16 @@ class SongFixerView {
     art.title = 'finds each song\u2019s cover online (MusicBrainz / Cover Art Archive) and adds it to the file; songs that already have art are skipped';
     art.addEventListener('click', async () => {
       this.running = true;
+      this.stopRequested = false;
       this._refreshActions();
       const r = await this.explorer.addAlbumArt(toArt.map(i => i.path), {
+      shouldStop: () => this.stopRequested,
         onProgress: (n, total) => this._setStatus(`looking for album art: ${n} of ${total}\u2026`),
       });
       this.running = false;
       if (r) {
         const why = [...new Set(r.reasons)].slice(0, 2).join('; ');
-        this._setStatus(`album art added to ${r.added} song${r.added === 1 ? '' : 's'}` +
+        this._setStatus(`album art added to ${r.added} song${r.added === 1 ? '' : 's'}` + (r.stopped ? ' (stopped)' : '') +
           (r.skipped + r.failed ? `, ${r.skipped + r.failed} not changed (${why})` : '') + '.' +
           (r.added ? ' to put it on your zune, press \u201cupdate zune\u201d in its music list.' : ''));
       }
@@ -850,6 +852,12 @@ class SongFixerView {
       sec.appendChild(filter);
 
       const bar = this._el('div', 'zune-diff-actions');
+      if (this.running && !this.coverScanning && !this.findingRealArt) {
+        const stop = this._el('button', 'zune-sync-btn zune-pull-btn', this.stopRequested ? 'stopping after the current song\u2026' : 'stop');
+        stop.disabled = !!this.stopRequested;
+        stop.addEventListener('click', () => { this.stopRequested = true; stop.disabled = true; stop.textContent = 'stopping after the current song\u2026'; });
+        bar.appendChild(stop);
+      }
       if (!this.running) {
         const find = this._el('button', 'zune-sync-btn zune-push-btn', `find album art online (${ticked.length})`);
         find.disabled = !ticked.length;
@@ -898,15 +906,17 @@ class SongFixerView {
 
   async _addArt(items, pickImage) {
     this.running = true;
+    this.stopRequested = false;
     this._draw();
     const r = await this.explorer.addAlbumArt(items.map(i => i.path), {
+      shouldStop: () => this.stopRequested,
       pickImage,
       onProgress: (n, total) => this._setStatus(`${pickImage ? 'adding the picture' : 'looking for album art'}: ${n} of ${total}\u2026`),
     });
     this.running = false;
     if (r) {
       const why = [...new Set(r.reasons)].slice(0, 2).join('; ');
-      this.status = `album art added to ${r.added} song${r.added === 1 ? '' : 's'}` +
+      this.status = `album art added to ${r.added} song${r.added === 1 ? '' : 's'}` + (r.stopped ? ' (stopped)' : '') +
         (r.skipped + r.failed ? `, ${r.skipped + r.failed} not changed (${why})` : '') + '.' +
         (r.added ? ' press \u201cupdate zune\u201d in its music list to put it on your zune.' : '');
     } else {
@@ -928,7 +938,12 @@ class SongFixerView {
       'or when the same picture is on lots of different artists and albums — real covers aren’t. look at each one: ticked pictures are removed from their songs ' +
       '(undo puts them back), then the real album art can be looked up.'));
     const artBar = this._el('div', 'zune-diff-actions');
-    if (this.coverScanning) {
+    if (this.findingRealArt) {
+      const stop = this._el('button', 'zune-sync-btn zune-pull-btn', this.stopRequested ? 'stopping after the current song\u2026' : 'stop');
+      stop.disabled = !!this.stopRequested;
+      stop.addEventListener('click', () => { this.stopRequested = true; stop.disabled = true; stop.textContent = 'stopping after the current song\u2026'; });
+      artBar.appendChild(stop);
+    } else if (this.coverScanning) {
       const stop = this._el('button', 'zune-sync-btn zune-pull-btn', 'stop checking');
       stop.title = 'stops reading album art; pictures found so far are still shown';
       stop.addEventListener('click', () => {
@@ -1214,14 +1229,18 @@ class SongFixerView {
   async _findRealArt() {
     const paths = (this.coverRemovedPaths || []).filter(p => this.explorer.musicLibrary.tracks.has(p));
     this.running = true;
+    this.stopRequested = false;
+    this.findingRealArt = true;
     this._draw();
     const r = await this.explorer.addAlbumArt(paths, {
+      shouldStop: () => this.stopRequested,
       onProgress: (n, total) => this._setStatus(`looking for album art: ${n} of ${total}…`),
     });
+    this.findingRealArt = false;
     this.running = false;
     if (r) {
       const why = [...new Set(r.reasons)].slice(0, 2).join('; ');
-      this._setStatus(`album art found for ${r.added} song${r.added === 1 ? '' : 's'}` +
+      this._setStatus(`album art found for ${r.added} song${r.added === 1 ? '' : 's'}` + (r.stopped ? ' (stopped)' : '') +
         (r.skipped + r.failed ? `, ${r.skipped + r.failed} without (${why})` : '') + '.' +
         ' press “update zune” in the zune music list to put the changes on your zune.');
       this.coverRemovedPaths = [];
