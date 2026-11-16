@@ -6313,7 +6313,7 @@ class ZuneExplorer {
                     e.stopPropagation();
                     const r = state.view.find(x => x.path === zb.dataset.zunePath);
                     if (r) {
-                        if (!state.selected.has(r.path)) { state.selected = new Set([r.path]); state.anchor = r.path; this._songsTableSelChanged(); }
+                        this._songsTableSelectPlayed(r.path);
                         this._playZuneOnly(r);
                     }
                     return;
@@ -6326,6 +6326,13 @@ class ZuneExplorer {
                     const p = row.dataset.trackPath;
                     // Double-click / double-tap plays it
                     if (e.detail >= 2 && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
+                        // The first click of the double-click picked just this song:
+                        // put back the songs that were selected before it
+                        if (state.beforeClick && state.beforeClick.path === p) {
+                            state.selected = new Set([...state.beforeClick.selected, p]);
+                            state.beforeClick = null;
+                            this._songsTableSelChanged();
+                        }
                         const r = state.view.find(x => x.path === p);
                         if (r && r.zuneOnly) this._playZuneOnly(r);
                         else if (r) this._songRowPlay(r, state.view.filter(x => !x.zuneOnly));
@@ -6342,6 +6349,7 @@ class ZuneExplorer {
                         if (state.selected.has(p)) state.selected.delete(p); else state.selected.add(p);
                         state.anchor = p;
                     } else {
+                        state.beforeClick = { path: p, selected: [...state.selected] };
                         state.selected = new Set([p]);
                         state.anchor = p;
                     }
@@ -6352,12 +6360,7 @@ class ZuneExplorer {
                 e.stopPropagation();
                 const r = state.view.find(x => x.path === btn.dataset.path);
                 if (r) {
-                    // Playing a song selects it too (unless it's part of a selection already)
-                    if (!state.selected.has(r.path)) {
-                        state.selected = new Set([r.path]);
-                        state.anchor = r.path;
-                        this._songsTableSelChanged();
-                    }
+                    this._songsTableSelectPlayed(r.path);
                     this._songRowPlay(r, state.view.filter(x => !x.zuneOnly));
                 }
             });
@@ -7008,6 +7011,15 @@ class ZuneExplorer {
             this._zuneMembershipLoading = false;
         }
         this._songsTableRefreshSoon(0);
+    }
+
+    /** Playing a song selects it too, added to any songs already selected (never clearing them). */
+    _songsTableSelectPlayed(path) {
+        const st = this.songsTable;
+        if (!st || st.selected.has(path)) return;
+        st.selected.add(path);
+        st.anchor = path;
+        this._songsTableSelChanged();
     }
 
     _songsTableRefreshSoon(wait = 600) {
