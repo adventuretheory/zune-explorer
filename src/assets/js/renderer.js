@@ -837,8 +837,7 @@ class ZuneSyncPanel {
             this._normalizeBrowseData();
             this.browseAlbumArtMap = result.contents.albumArtMap || {};
             // A fresh read of the Zune: the songs table's "on" column follows
-            this.explorer._zuneMembership = null;
-            this.explorer._songsTableRefreshSoon?.(100);
+            this.explorer._zuneMembershipChanged?.(100);
 
             // Save to cache
             if (this.deviceKey) {
@@ -916,8 +915,7 @@ class ZuneSyncPanel {
                     this._destroyDiffScroller();
                     this._renderDiffList();
                 }
-                this.explorer._zuneMembership = null;
-                this.explorer._songsTableRefreshSoon?.(100);
+                this.explorer._zuneMembershipChanged?.(100);
             }
         } catch (e) {
             console.warn('quiet zune refresh failed', e);
@@ -1467,8 +1465,7 @@ class ZuneSyncPanel {
 
         if (standalone) return { matched, localOnly, deviceOnly };
         // The songs table's "on" column follows this
-        this.explorer._zuneMembership = null;
-        this.explorer._songsTableRefreshSoon?.();
+        this.explorer._zuneMembershipChanged?.(600);
         this.diffResult = { matched, localOnly, deviceOnly };
     }
 
@@ -2792,8 +2789,7 @@ class ZuneSyncPanel {
             if (this.lastStatus) this.lastStatus.storage = result.storage; // free space shown elsewhere
         }
         // The songs table's "on" column and Zune filters follow straight away
-        this.explorer._zuneMembership = null;
-        this.explorer._songsTableRefreshSoon?.(100);
+        this.explorer._zuneMembershipChanged?.(100);
         if (this.browseData) {
             const failed = new Set((result.errors || []).map(e => e.handle));
             const gone = new Set(handles.filter(h => !failed.has(h)));
@@ -6814,8 +6810,11 @@ class ZuneExplorer {
         if (rescan) await (this.zunePanel?.refreshQuietly ? this.zunePanel.refreshQuietly() : this.zunePanel?._rescanDevice?.());
         // One already being worked out would be from before the change: wait it out
         for (let i = 0; this._zuneMembershipLoading && i < 100; i++) await new Promise(r => setTimeout(r, 100));
-        this._zuneMembership = null;
+        // (the old answer stays in place until the new one is ready, so the
+        // songs list doesn't empty out and jump back to the top meanwhile)
+        clearTimeout(this._zuneMembershipTimer);
         await this._loadZuneMembership();
+        for (let i = 0; (this._zuneMembershipLoading || this._zuneMembershipAgain) && i < 200; i++) await new Promise(r => setTimeout(r, 100));
         return this._zuneMembership;
     }
 
@@ -6960,8 +6959,20 @@ class ZuneExplorer {
     }
 
     /** Work out which library songs are on the Zune; re-draws the table when done. */
+    /**
+     * What's on the Zune changed: work it out again. The songs list keeps
+     * showing the previous answer until then (no emptying, no jump to the top).
+     */
+    _zuneMembershipChanged(wait = 100) {
+        clearTimeout(this._zuneMembershipTimer);
+        this._zuneMembershipTimer = setTimeout(() => {
+            if (this._zuneMembershipLoading) { this._zuneMembershipAgain = true; return; }
+            this._loadZuneMembership();
+        }, wait);
+    }
+
     async _loadZuneMembership() {
-        if (this._zuneMembershipLoading) return;
+        if (this._zuneMembershipLoading) { this._zuneMembershipAgain = true; return; }
         this._zuneMembershipLoading = true;
         try {
             const zp = this.zunePanel;
@@ -7010,6 +7021,7 @@ class ZuneExplorer {
         } finally {
             this._zuneMembershipLoading = false;
         }
+        if (this._zuneMembershipAgain) { this._zuneMembershipAgain = false; this._loadZuneMembership(); return; }
         this._songsTableRefreshSoon(0);
     }
 
