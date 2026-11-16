@@ -4583,8 +4583,85 @@ class ZuneExplorer {
         }
         if (done.length) await window.electronAPI.batchScanAudioMetadata(done, { includeArt: true });
         out.summary = this.albumArtSummary(out);
-        this.showToast?.(out.summary + (out.added ? ' · press “update zune” to put it on your zune' : ''));
+        this.showToast?.(out.summary);
+        // Songs that are on the Zune get the new covers there too, right away
+        if (done.length) this.pushArtToZune(done);
         return out;
+    }
+
+    /** What happens to new covers on the Zune, in a sentence. */
+    zuneArtNote() {
+        return this.zunePanel?.state === 'connected'
+            ? 'songs that are on your zune get the new covers there now — no need to press “update zune”.'
+            : 'songs that are on your zune get the new covers the next time it’s connected — no need to press “update zune”.';
+    }
+
+    /**
+     * Put new covers on the Zune for songs that are on it, without sending
+     * the songs again (the Zune keeps one cover per album). If it isn't
+     * connected, they go on when it next connects (see _pushPendingArt).
+     */
+    async pushArtToZune(paths, { quiet = false } = {}) {
+        const zp = this.zunePanel;
+        if (!zp || zp.state !== 'connected') return { notConnected: true };
+        if (this._zuneArtPushing) {
+            if (!this._zuneArtLater) this._zuneArtLater = new Set();
+            for (const p of paths) this._zuneArtLater.add(p);
+            return { queued: true };
+        }
+        let zm = this._zuneMembership;
+        if (!zm || zm.none) zm = await this._refreshZuneMembership();
+        if (!zm || zm.none) return { none: true };
+        const byHandle = new Map((zp.browseData?.music || []).map(i => [i.handle, i]));
+        const items = [];
+        for (const p of paths) {
+            const h = zm.onZune.get(p);
+            if (h != null) items.push({ path: p, handle: h, zuneAlbum: byHandle.get(h)?.album || '' });
+        }
+        if (!items.length) return { none: true };
+        this._zuneArtPushing = true;
+        const ph = window.electronAPI.onZuneArtProgress?.((d) => {
+            this.showToast?.(d.phase === 'finding'
+                ? `putting new covers on your zune: finding albums (${d.done} of ${d.total})…`
+                : `putting new covers on your zune: ${d.done} of ${d.total} albums…`);
+        });
+        let r;
+        try {
+            this.showToast?.(`putting new covers on your zune (${items.length} song${items.length === 1 ? '' : 's'})…`);
+            r = await window.electronAPI.zuneSetArt(items);
+        } catch (e) {
+            r = { success: false, error: e.message };
+        } finally {
+            if (ph) window.electronAPI.offZuneArtProgress(ph);
+            this._zuneArtPushing = false;
+        }
+        const s = (n) => (n === 1 ? '' : 's');
+        if (!r.success) {
+            if (!quiet) this.showToast?.(`couldn’t put the new covers on your zune just now (${r.error}) — they’ll go on the next time it connects`);
+        } else {
+            const n = r.done.length, left = r.noAlbum.length + r.errors.length;
+            if (n || !quiet) {
+                this.showToast?.(n
+                    ? `new covers are on your zune: ${n} song${s(n)}, ${r.albums} album${s(r.albums)}` +
+                        (left ? ` · ${left} song${s(left)} without an album on the zune get${left === 1 ? 's' : ''} it with “update zune”` : '')
+                    : 'the zune didn’t take the new covers — they’ll go on with “update zune”');
+            }
+        }
+        if (this._zuneArtLater?.size) {
+            const more = [...this._zuneArtLater];
+            this._zuneArtLater.clear();
+            this.pushArtToZune(more, { quiet });
+        }
+        return r;
+    }
+
+    /** The Zune just connected: put on covers added while it was away. */
+    async _pushPendingArt() {
+        let list = [];
+        try { list = await window.electronAPI.songFixerZunePending(); } catch { return; }
+        if (!Array.isArray(list)) list = list?.pending || list?.list || [];
+        const paths = list.filter(e => e && e.artChanged && !e.removedFromZune && e.path).map(e => e.path);
+        if (paths.length) await this.pushArtToZune(paths, { quiet: true });
     }
 
     /** "album art added to 12 songs: 8 found online, 3 from the same album, 1 made cover · 2 not changed (…)" */
@@ -6919,6 +6996,11 @@ class ZuneExplorer {
                 if (p) extraOf.set(d.handle, p);
             }
             this._zuneMembership = { onZune, zuneOnly: res.deviceOnly, extraOf, source, when };
+            // Once per connection: covers added while the Zune was away go on now
+            if (source === 'connected' && this._artPushedFor !== key) {
+                this._artPushedFor = key;
+                setTimeout(() => this._pushPendingArt(), 2000);
+            }
         } catch (e) {
             console.warn('zune membership failed', e);
             this._zuneMembership = { none: true };

@@ -79,6 +79,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return handler;
   },
   offZuneBrowseProgress: (handler) => ipcRenderer.removeListener('zune-browse-progress', handler),
+  zuneSetArt: (items) => ipcRenderer.invoke('zune-set-art', items),
+  onZuneArtProgress: (cb) => { const h = (e, d) => cb(d); ipcRenderer.on('zune-art-progress', h); return h; },
+  offZuneArtProgress: (h) => ipcRenderer.removeListener('zune-art-progress', h),
   onZuneDeleteProgress: (cb) => { const h = (e, d) => cb(d); ipcRenderer.on('zune-delete-progress', h); return h; },
   offZuneDeleteProgress: (h) => ipcRenderer.removeListener('zune-delete-progress', h),
   onZunePullProgress: (callback) => {

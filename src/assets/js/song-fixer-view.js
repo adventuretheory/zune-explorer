@@ -304,7 +304,7 @@ class SongFixerView {
       });
       this.running = false;
       if (r) {
-        this._setStatus(r.summary + '.' + (r.added ? ' to put it on your zune, press \u201cupdate zune\u201d in its music list.' : ''));
+        this._setStatus(r.summary + '.' + (r.added ? ' ' + this.explorer.zuneArtNote() : ''));
       }
       try { this.undoInfo = await window.electronAPI.songFixerUndoInfo(); } catch {}
       await new Promise(res => setTimeout(res, 300));
@@ -930,7 +930,7 @@ class SongFixerView {
     });
     this.running = false;
     if (r) {
-      this.status = r.summary + '.' + (r.added ? ' press \u201cupdate zune\u201d in its music list to put it on your zune.' : '');
+      this.status = r.summary + '.' + (r.added ? ' ' + this.explorer.zuneArtNote() : '');
     } else {
       this.status = '';
     }
@@ -1319,7 +1319,7 @@ class SongFixerView {
     this.running = false;
     if (r) {
       this._setStatus(r.summary + '.' +
-        ' press “update zune” in the zune music list to put the changes on your zune.');
+        (r.added ? ' ' + this.explorer.zuneArtNote() : ''));
       this.coverRemovedPaths = [];
     }
     try { this.undoInfo = await window.electronAPI.songFixerUndoInfo(); } catch {}

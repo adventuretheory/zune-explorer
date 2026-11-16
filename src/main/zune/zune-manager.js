@@ -1818,6 +1818,72 @@ class ZuneManager extends EventEmitter {
   }
 
   /**
+   * Put new cover pictures on songs already on the Zune, without sending the
+   * songs again. The Zune keeps a cover per album, so each song's album
+   * entry gets the picture (every song on that album shows it).
+   * @param {{ handle: number, album: string, image: Buffer }[]} items  JPEG images
+   * @returns {{ done: number[], noAlbum: number[], errors: {handle, error}[], albums: number }}
+   */
+  async setAlbumArt(items) {
+    if (!this.connected) throw new Error('No Zune device connected');
+    if (this.transferring) throw new Error('Zune is busy receiving songs \u2014 wait for that to finish');
+    this._assertNotPulling();
+    this.transferring = true;
+    const progress = (phase, done, total) => this.emit('art-progress', { phase, done, total });
+    const done = [], noAlbum = [], errors = [];
+    let albums = 0;
+    try {
+      // The songs' real handles (the list's IDs may be database IDs)
+      const real = new Map(); // real handle -> item
+      for (const it of items) {
+        try { real.set(await this.resolveHandle(it.handle), it); } catch (err) { errors.push({ handle: it.handle, error: err.message }); }
+      }
+      // Album entries with the same names as the songs' albums, and the songs in them
+      const names = new Set(items.map(i => String(i.album || '')).filter(Boolean));
+      let albumHandles = [];
+      try { albumHandles = await this.mtp.getObjectHandles(this.storageId, ObjectFormat.AbstractAudioAlbum); } catch (_) {}
+      const covers = new Map(); // album handle -> { image, items[] }
+      let looked = 0;
+      for (const h of albumHandles) {
+        if (++looked % 25 === 0) progress('finding', looked, albumHandles.length);
+        let name = null;
+        try { name = await this.mtp.getObjectPropString(h, ObjectProperty.Name); } catch (_) { continue; }
+        if (!name || !names.has(name)) continue;
+        let refs = [];
+        try { refs = await this.mtp.getObjectReferences(h); } catch (_) { continue; }
+        for (const r of refs) {
+          const it = real.get(r);
+          if (!it) continue;
+          if (!covers.has(h)) covers.set(h, { image: it.image, items: [] });
+          covers.get(h).items.push(it);
+        }
+      }
+      const placed = new Set();
+      let n = 0;
+      for (const [h, { image, items: its }] of covers) {
+        progress('covers', ++n, covers.size);
+        try {
+          await this.mtp.setObjectPropArray(h, ObjectProperty.RepresentativeSampleData, image);
+          try { await this.mtp.setObjectPropUint32(h, ObjectProperty.RepresentativeSampleSize, image.length); } catch (_) {}
+          try { await this.mtp.setObjectPropUint16(h, ObjectProperty.RepresentativeSampleFormat, ObjectFormat.JPEG); } catch (_) {}
+          albums++;
+          for (const it of its) { placed.add(it); done.push(it.handle); }
+        } catch (err) {
+          for (const it of its) { placed.add(it); errors.push({ handle: it.handle, error: err.message }); }
+        }
+      }
+      // Songs with no album entry on the Zune: their cover goes with "update zune"
+      for (const it of real.values()) if (!placed.has(it)) noAlbum.push(it.handle);
+      if (albums) {
+        try { await this.mtp.syncDeviceDB(1); } catch (_) { /* the Zune also updates on its own */ }
+      }
+    } finally {
+      this.transferring = false;
+    }
+    return { done, noAlbum, errors, albums };
+  }
+
+  /**
    * Create a playlist on the Zune, or update one (same songs, new order or
    * contents) when `replaceHandle` is given.
    * @param {string} name

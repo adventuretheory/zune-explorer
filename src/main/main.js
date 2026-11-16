@@ -199,6 +199,9 @@ app.whenReady().then(async () => {
   zuneManager.on('browse-progress', (data) => {
     if (mainWindow) mainWindow.webContents.send('zune-browse-progress', data);
   });
+  zuneManager.on('art-progress', (data) => {
+    if (mainWindow) mainWindow.webContents.send('zune-art-progress', data);
+  });
   zuneManager.on('delete-progress', (data) => {
     if (mainWindow) mainWindow.webContents.send('zune-delete-progress', data);
   });
@@ -728,6 +731,46 @@ ipcMain.handle('zune-retag', async (event, edits) => {
       return { handle: e.handle, changes, old: { artist: str(e.old?.artist), album: str(e.old?.album) } };
     });
     return { success: true, ...(await zuneManager.retagTracks(clean)) };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+// New covers onto songs already on the Zune (no re-sending). Songs whose only
+// change was the cover are then done for "update zune".
+ipcMain.handle('zune-set-art', async (event, items) => {
+  try {
+    if (!Array.isArray(items)) throw new Error('Bad request');
+    const ok = items.filter(i => i && Number.isInteger(i.handle) && typeof i.path === 'string' && isAllowedPath(i.path));
+    const send = [];
+    const pathOf = new Map();
+    const pictures = new Map(); // same picture bytes -> one JPEG
+    for (const it of ok) {
+      let pic = null;
+      try { pic = await songFixer.readCover(it.path); } catch { /* unreadable */ }
+      if (!pic) continue;
+      const key = require('crypto').createHash('sha1').update(pic).digest('hex');
+      if (!pictures.has(key)) pictures.set(key, await imageToJpeg(pic, 500));
+      const image = pictures.get(key);
+      if (!image) continue;
+      const tags = await songFixer.readTags(it.path).catch(() => ({}));
+      send.push({ handle: it.handle, album: String(it.zuneAlbum || tags.album || ''), image });
+      pathOf.set(it.handle, { path: it.path, tags });
+    }
+    if (!send.length) return { success: true, done: [], noAlbum: [], errors: [], albums: 0 };
+    const r = await zuneManager.setAlbumArt(send);
+    // Done for "update zune" when nothing else about the song changed
+    const pending = new Map((await songFixer.zunePending().catch(() => [])).map(e => [e.path, e]));
+    const finished = [];
+    for (const h of r.done) {
+      const { path: p, tags } = pathOf.get(h) || {};
+      const e = p && pending.get(p);
+      if (!e) continue;
+      const b = e.before || {};
+      if ((b.title || '') === (tags.title || '') && (b.artist || '') === (tags.artist || '') && (b.album || '') === (tags.album || '')) finished.push(p);
+    }
+    if (finished.length) await songFixer.zuneDone(finished);
+    return { success: true, ...r, donePaths: r.done.map(h => pathOf.get(h)?.path).filter(Boolean), finished: finished.length };
   } catch (error) {
     return { success: false, error: error.message };
   }
@@ -1592,10 +1635,10 @@ async function findAlbumArt({ title, artist, album }) {
 }
 
 // Any picture (e.g. a WebP artist photo) as a JPEG, via ffmpeg. null if it can't be read.
-function imageToJpeg(buf) {
+function imageToJpeg(buf, max = 1000) {
   return new Promise((resolve) => {
     const { spawn } = require('child_process');
-    const proc = spawn(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-i', 'pipe:0', '-frames:v', '1', '-vf', "scale='min(1000,iw)':-2", '-q:v', '3', '-f', 'mjpeg', 'pipe:1'], { timeout: 20000 });
+    const proc = spawn(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-i', 'pipe:0', '-frames:v', '1', '-vf', `scale='min(${max},iw)':-2`, '-q:v', '3', '-f', 'mjpeg', 'pipe:1'], { timeout: 20000 });
     const out = [];
     proc.stdout.on('data', (c) => out.push(c));
     proc.on('error', () => resolve(null));
