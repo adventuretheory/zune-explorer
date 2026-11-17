@@ -7,8 +7,27 @@ function getClient(url) {
 
 const USER_AGENT = 'ZuneExplorer/1.7.0 (https://github.com/NiceBeard/zune-explorer)';
 let lastRequestTime = 0;
+let mbQueue = Promise.resolve();
 
+// MusicBrainz allows about one request a second. Requests wait their turn in
+// one line (several callers at once used to go together and get refused),
+// and a "too busy" answer (503) is tried again after a pause.
 function rateLimitedFetch(url) {
+  const run = mbQueue.then(async () => {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await rateLimitedFetchOnce(url);
+      } catch (err) {
+        if (attempt >= 2 || !/^HTTP (503|429)|Request timeout|ECONNRESET/.test(err.message)) throw err;
+        await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
+      }
+    }
+  });
+  mbQueue = run.catch(() => {});
+  return run;
+}
+
+function rateLimitedFetchOnce(url) {
   return new Promise((resolve, reject) => {
     const now = Date.now();
     const wait = Math.max(0, 1100 - (now - lastRequestTime));
@@ -17,7 +36,7 @@ function rateLimitedFetch(url) {
       lastRequestTime = Date.now();
       const req = getClient(url).get(url, { headers: { 'User-Agent': USER_AGENT, 'Accept': 'application/json' } }, (res) => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          rateLimitedFetch(res.headers.location).then(resolve, reject);
+          rateLimitedFetchOnce(res.headers.location).then(resolve, reject);
           return;
         }
         let body = '';
@@ -38,6 +57,12 @@ function rateLimitedFetch(url) {
 }
 
 function fetchBinary(url) {
+  const run = mbQueue.then(() => fetchBinaryOnce(url));
+  mbQueue = run.catch(() => {});
+  return run;
+}
+
+function fetchBinaryOnce(url) {
   return new Promise((resolve, reject) => {
     const now = Date.now();
     const wait = Math.max(0, 1100 - (now - lastRequestTime));
@@ -46,7 +71,7 @@ function fetchBinary(url) {
       lastRequestTime = Date.now();
       const req = getClient(url).get(url, { headers: { 'User-Agent': USER_AGENT } }, (res) => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          fetchBinary(res.headers.location).then(resolve, reject);
+          fetchBinaryOnce(res.headers.location).then(resolve, reject);
           return;
         }
         if (res.statusCode !== 200) {

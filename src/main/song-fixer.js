@@ -301,12 +301,14 @@ class SongFixer {
       album: current.album || libraryTrack.album || '',
     };
     const terms = logic.titleSearchTerms(track, filePath);
+    let reached = false, lastErr = null;
     for (const query of logic.titleSearchQueries(terms)) {
       let response;
-      try { response = await this.searchRecordings(query); } catch { continue; }
+      try { response = await this.searchRecordings(query); reached = true; } catch (err) { lastErr = err; continue; }
       const proposal = logic.pickTitleSearchMatch(response, terms, current.duration || libraryTrack.duration || 0, current);
       if (proposal) return proposal;
     }
+    if (!reached && lastErr) throw new Error(`couldn\u2019t reach MusicBrainz (${lastErr.message.slice(0, 60)}) \u2014 try again later`);
     return null;
   }
 

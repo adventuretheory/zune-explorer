@@ -53,7 +53,9 @@ class SongFixerView {
 
   /** On the "needs fixing" list: something's wrong, not fixed, checked or ignored. */
   _needsFixing(i) {
-    return !i.ignored && i.state !== 'applied' && i.state !== 'confirmed' && (i.reasons.length > 0 || i.state !== 'idle');
+    // A song whose name was found on MusicBrainz exactly as it is isn't
+    // "needing a fix" just because the sound database doesn't know it
+    return !i.ignored && i.state !== 'applied' && i.state !== 'confirmed' && (i.reasons.length > 0 || (i.state !== 'idle' && i.state !== 'matched'));
   }
 
   /** Songs listed now. A "show only" pick (e.g. not recognised) narrows it unless `all`. */
@@ -405,6 +407,7 @@ class SongFixerView {
       ['tags look wrong', base.filter(i => i.state === 'found')],
       ['not checked yet', base.filter(i => i.state === 'idle')],
       ['confirmed', base.filter(i => i.state === 'confirmed')],
+      ['name found as is', base.filter(i => i.state === 'matched')],
       ['ignored', base.filter(i => i.ignored)],
       ['no album art', base.filter(i => !(i.track.albumArtKey || i.track.albumArt))],
       ['on zune too', base.filter(i => this._whereOf(i.path) === 'zune')],
@@ -509,6 +512,10 @@ class SongFixerView {
       case 'error':
         line.textContent = item.error || 'something went wrong';
         line.classList.add('bad');
+        return line;
+      case 'matched':
+        line.textContent = '\u2713 name found on musicbrainz, same as yours \u2014 most likely right (this recording isn\u2019t in the sound database, so it couldn\u2019t be checked by sound)';
+        line.classList.add('good');
         return line;
       case 'confirmed':
         line.textContent = '\u2713 tags confirmed by sound';
@@ -1563,7 +1570,7 @@ class SongFixerView {
     this.running = true;
     this.stopRequested = false;
     this._refreshActions();
-    let found = 0, none = 0, failed = 0, confirmed = 0;
+    let found = 0, none = 0, failed = 0, confirmed = 0, matched = 0;
     const newlyConfirmed = [];
     if (items.length > 60) {
       const mins = Math.max(1, Math.round(items.length * 2 / 60));
@@ -1605,10 +1612,13 @@ class SongFixerView {
           newlyConfirmed.push(item.path);
           confirmed++;
         } else if (!really.length) {
-          // Only the title search ran, and it found the same name: proves nothing
-          item.state = 'none';
-          item.note = 'couldn\u2019t confirm by sound (the title search only found the same name)';
-          none++;
+          // The sound database doesn't know this recording (live versions,
+          // demos, remixes...), but MusicBrainz has a song by exactly this
+          // name and artist: nothing to change, most likely right
+          item.state = 'matched';
+          item.selected = false;
+          item.result = res;
+          matched++;
         } else {
           item.result = res;
           item.albumIdx = 0;
@@ -1636,7 +1646,7 @@ class SongFixerView {
       if (i.state === 'none' || i.state === 'error') i.selected = false;
     }
     this.running = false;
-    this._setStatus(`${confirmed ? `${confirmed} confirmed correct, ` : ''}${found} ${confirmed ? 'look wrong' : 'recognised'}, ${none} not recognised${failed ? `, ${failed} failed` : ''}. ` +
+    this._setStatus(`${confirmed ? `${confirmed} confirmed correct, ` : ''}${matched ? `${matched} name found as is (most likely right), ` : ''}${found} ${confirmed ? 'look wrong' : 'recognised'}, ${none} not recognised${failed ? `, ${failed} failed (couldn\u2019t reach the music databases \u2014 try those again later)` : ''}. ` +
       (found ? 'check the suggestions, untick any that look wrong, then press apply. ' : '') +
       (none + failed ? 'for the rest: \u201cshow only: not recognised\u201d below, then \u201cclean up names\u201d \u2014 or \u201cedit\u201d one song.' : ''));
     this._drawList();
