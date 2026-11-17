@@ -4652,3 +4652,5 @@ body.zune-panel-open .scroll-top-btn { right: 396px; }
   padding-left: 12px;
 }
 .song-fixer-cover-btns .song-fixer-link:disabled { opacity: 0.4; cursor: default; }
+.song-fixer-pick.active { color: #fff; text-decoration: underline; text-underline-offset: 4px; }
+.song-fixer-showall { color: #fff; }

@@ -56,12 +56,17 @@ class SongFixerView {
     return !i.ignored && i.state !== 'applied' && i.state !== 'confirmed' && (i.reasons.length > 0 || i.state !== 'idle');
   }
 
-  _visible() {
+  /** Songs listed now. A "show only" pick (e.g. not recognised) narrows it unless `all`. */
+  _visible({ all = false } = {}) {
     const q = this.filter.trim().toLowerCase();
+    // The pick is the songs that were in that group when it was clicked, so a
+    // song doesn't vanish while it's being identified or fixed
+    const pick = !all && this.pick && this.pick.mode === this.mode ? this.pick.paths : null;
     const list = this.items.filter(i =>
       // Fixed songs leave "needs fixing" (they're still under "all songs"),
       // so select all / delete only cover what's left
       (this.mode === 'all' || this._needsFixing(i)) &&
+      (!pick || pick.has(i.path)) &&
       (!q || [i.track.title, i.track.artist, i.track.album, i.path].some(v => String(v || '').toLowerCase().includes(q))));
     if (!this._sizes || this._sizes.size !== (this.explorer.categorizedFiles?.music || []).length) {
       this._sizes = new Map((this.explorer.categorizedFiles?.music || []).map(f => [f.path, f.size || 0]));
@@ -362,7 +367,10 @@ class SongFixerView {
     if (!wrap) return;
     wrap.innerHTML = '';
     this.rowEls.clear();
-    const visible = this._visible();
+    let visible = this._visible();
+    const picked = this.pick && this.pick.mode === this.mode ? this.pick : null;
+    if (picked && !visible.length) { this.pick = null; visible = this._visible(); }
+    const base = picked ? this._visible({ all: true }) : visible;
 
     if (visible.length === 0) {
       wrap.appendChild(this._el('div', 'zune-diff-empty', this.mode === 'all' ? 'no songs match' : 'no songs need fixing — nice'));
@@ -373,7 +381,7 @@ class SongFixerView {
 
     if (this.mode === 'all') {
       wrap.appendChild(this._el('div', 'song-fixer-note song-fixer-howto',
-        'to check songs that look fine: tick some (filter by an artist or album, or use \u201cselect only: not checked yet\u201d) and press identify. ' +
+        'to check songs that look fine: tick some (filter by an artist or album, or use \u201cshow only: not checked yet\u201d) and press identify. ' +
         'songs whose tags match what the audio really is get \u2713 confirmed and are remembered; the rest show what\u2019s wrong.'));
     }
 
@@ -391,31 +399,43 @@ class SongFixerView {
 
     // Quick picks once songs have been looked up: e.g. tick only the ones
     // that weren't recognised, then "clean up names"
+    // "show only": list just one group (e.g. the songs not recognised) and tick them
     const groups = [
-      ['not recognised', visible.filter(i => i.state === 'none' || i.state === 'error')],
-      ['tags look wrong', visible.filter(i => i.state === 'found')],
-      ['not checked yet', visible.filter(i => i.state === 'idle')],
-      ['confirmed', visible.filter(i => i.state === 'confirmed')],
-      ['ignored', visible.filter(i => i.ignored)],
-      ['no album art', visible.filter(i => !(i.track.albumArtKey || i.track.albumArt))],
-      ['on zune too', visible.filter(i => this._whereOf(i.path) === 'zune')],
-      ['computer only', visible.filter(i => this._whereOf(i.path) === 'computer')],
-    ].filter(([, list]) => list.length && list.length < visible.length);
+      ['not recognised', base.filter(i => i.state === 'none' || i.state === 'error')],
+      ['tags look wrong', base.filter(i => i.state === 'found')],
+      ['not checked yet', base.filter(i => i.state === 'idle')],
+      ['confirmed', base.filter(i => i.state === 'confirmed')],
+      ['ignored', base.filter(i => i.ignored)],
+      ['no album art', base.filter(i => !(i.track.albumArtKey || i.track.albumArt))],
+      ['on zune too', base.filter(i => this._whereOf(i.path) === 'zune')],
+      ['computer only', base.filter(i => this._whereOf(i.path) === 'computer')],
+    ].filter(([label, list]) => (list.length && list.length < base.length) || picked?.label === label);
     const selRow = this._el('div', 'song-fixer-quickselect');
     selRow.appendChild(all);
-    if (groups.length) {
-      selRow.appendChild(this._el('span', 'song-fixer-dim', 'select only:'));
+    if (groups.length || picked) {
+      selRow.appendChild(this._el('span', 'song-fixer-dim', 'show only:'));
       for (const [label, list] of groups) {
-        const b = this._el('button', 'song-fixer-link song-fixer-pick', `${label} (${list.length})`);
+        const on = picked?.label === label;
+        const b = this._el('button', 'song-fixer-link song-fixer-pick' + (on ? ' active' : ''), `${label} (${on ? visible.length : list.length})`);
+        b.title = on ? 'showing only these — press “show all” to see every song again' : `list only these ${list.length} songs, ticked`;
         b.addEventListener('click', () => {
-          for (const i of visible) if (i.state !== 'applied') i.selected = list.includes(i);
+          if (this.running) return;
+          for (const i of this.items) if (i.state !== 'applied') i.selected = false;
+          for (const i of list) if (i.state !== 'applied') i.selected = true;
+          this.pick = { mode: this.mode, label, paths: new Set(list.map(i => i.path)) };
+          this.limit = PAGE_SIZE;
           this._drawList();
           this._refreshActions();
         });
         selRow.appendChild(b);
       }
-      const none = this._el('button', 'song-fixer-link song-fixer-pick', 'none');
-      none.addEventListener('click', () => { for (const i of visible) i.selected = false; this._drawList(); this._refreshActions(); });
+      if (picked) {
+        const showAll = this._el('button', 'song-fixer-link song-fixer-pick song-fixer-showall', `show all (${base.length})`);
+        showAll.addEventListener('click', () => { this.pick = null; this.limit = PAGE_SIZE; this._drawList(); this._refreshActions(); });
+        selRow.appendChild(showAll);
+      }
+      const none = this._el('button', 'song-fixer-link song-fixer-pick', 'tick none');
+      none.addEventListener('click', () => { for (const i of base) i.selected = false; this._drawList(); this._refreshActions(); });
       selRow.appendChild(none);
     }
     wrap.appendChild(selRow);
@@ -1618,7 +1638,7 @@ class SongFixerView {
     this.running = false;
     this._setStatus(`${confirmed ? `${confirmed} confirmed correct, ` : ''}${found} ${confirmed ? 'look wrong' : 'recognised'}, ${none} not recognised${failed ? `, ${failed} failed` : ''}. ` +
       (found ? 'check the suggestions, untick any that look wrong, then press apply. ' : '') +
-      (none + failed ? 'for the rest: \u201cselect only: not recognised\u201d below, then \u201cclean up names\u201d \u2014 or \u201cedit\u201d one song.' : ''));
+      (none + failed ? 'for the rest: \u201cshow only: not recognised\u201d below, then \u201cclean up names\u201d \u2014 or \u201cedit\u201d one song.' : ''));
     this._drawList();
     this._refreshActions();
   }
@@ -1678,7 +1698,7 @@ class SongFixerView {
       if (ignore) this.ignored.add(i.path); else this.ignored.delete(i.path);
     }
     this._setStatus(ignore
-      ? `${items.length} song${items.length === 1 ? '' : 's'} ignored \u2014 they won\u2019t be listed here again unless the file changes (\u201call songs\u201d \u2192 select only: ignored, to bring them back).`
+      ? `${items.length} song${items.length === 1 ? '' : 's'} ignored \u2014 they won\u2019t be listed here again unless the file changes (\u201call songs\u201d \u2192 show only: ignored, to bring them back).`
       : `${items.length} song${items.length === 1 ? '' : 's'} back on the needs fixing list.`);
     this._draw();
   }
