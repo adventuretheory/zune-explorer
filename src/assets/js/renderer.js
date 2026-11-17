@@ -4486,6 +4486,12 @@ class ZuneExplorer {
             ? [...this.musicLibrary.tracks].filter(([, x]) => x.album === t.album && (x.albumArtist || x.artist) === (t.albumArtist || t.artist)).map(([p]) => p)
             : [];
         const n = paths.length === 1 ? '' : ` (${paths.length} songs)`;
+        // Zune-only songs selected alongside in the songs table come along too
+        const st = this.songsTable;
+        const zuneHandles = st && paths.every(p => st.selected.has(p))
+            ? st.rows.filter(r => r.zuneOnly && st.selected.has(r.path)).map(r => r.handle) : [];
+        const all = paths.length + zuneHandles.length;
+        items.push({ label: all === 1 ? 'Fix Song Details\u2026' : `Fix Details of ${all} Songs\u2026`, action: () => new window.SongDetailsDialog(this, { paths, handles: zuneHandles }) });
         items.push({ label: `Find Album Art Online${n}`, action: () => this.addAlbumArt(paths) });
         items.push({ label: `Set Album Art from Image\u2026${n}`, action: () => this.addAlbumArt(paths, { pickImage: true }) });
         if (paths.length === 1) items.push({ label: 'Search the Web for Album Art', action: () => this.searchCoverOnline(paths[0]) });
@@ -4510,7 +4516,7 @@ class ZuneExplorer {
      * covers (used to replace stand-ins later).
      * Returns { added, skipped, failed, reasons, sources, stopped }.
      */
-    async addAlbumArt(paths, { pickImage = false, fromClipboard = false, replace = false, standIns = true, realOnly = false, onProgress, shouldStop } = {}) {
+    async addAlbumArt(paths, { pickImage = false, fromClipboard = false, replace = false, standIns = true, realOnly = false, noSiblings = false, onProgress, shouldStop } = {}) {
         let imagePath = null;
         if (pickImage) {
             imagePath = await window.electronAPI.pickImage();
@@ -4556,7 +4562,7 @@ class ZuneExplorer {
             const info = { title: t.title, artist: t.albumArtist || t.artist, album: t.album };
             const k = albumKey(t);
             let res = await window.electronAPI.songFixerAddArt(batchId, p, info,
-                { imagePath, fromClipboard, replace, siblings: lookup ? (withArt.get(k) || []) : undefined, standIns: lookup && standIns });
+                { imagePath, fromClipboard, replace, siblings: lookup && !noSiblings ? (withArt.get(k) || []) : undefined, standIns: lookup && standIns });
             if (res.success && res.needsMade) {
                 try {
                     const imageData = await this.makeCover(t);
@@ -6920,6 +6926,11 @@ class ZuneExplorer {
         const ready = zp && zp.state === 'connected' && zp.browseData;
         const need = () => this.showToast?.('connect your zune (and open it in the zune panel) to do this');
         const items = [];
+        // Only zune songs selected: fixing their details is here (with computer songs, it's in the file menu)
+        if (zuneOnly.length && zuneOnly.length === sel.length) {
+            items.push({ label: zuneOnly.length === 1 ? 'Fix Song Details on Zune\u2026' : `Fix Details of ${zuneOnly.length} Songs on Zune\u2026`,
+                action: () => (ready ? new window.SongDetailsDialog(this, { handles: zuneOnly }) : need()) });
+        }
         if (zuneOnly.length) items.push({ label: `Copy to Computer (${zuneOnly.length})`, title: 'copy these songs from the zune to your computer', action: () => (ready ? zp.copyToComputerReport(zuneOnly) : need()) });
         if (onZune.length) items.push({ label: `Remove from Zune (${onZune.length})`, title: 'songs not on your computer are offered to be copied first', action: () => (ready ? zp.removeFromDevice(onZune) : need()) });
         return items;

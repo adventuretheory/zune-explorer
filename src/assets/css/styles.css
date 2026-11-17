@@ -4654,3 +4654,12 @@ body.zune-panel-open .scroll-top-btn { right: 396px; }
 .song-fixer-cover-btns .song-fixer-link:disabled { opacity: 0.4; cursor: default; }
 .song-fixer-pick.active { color: #fff; text-decoration: underline; text-underline-offset: 4px; }
 .song-fixer-showall { color: #fff; }
+
+/* Fix song details dialog */
+.song-details-form { display: flex; flex-direction: column; gap: 10px; margin: 16px 0; }
+.song-details-field { display: flex; align-items: center; gap: 12px; }
+.song-details-field span { width: 54px; color: var(--zune-text-dim); font-size: 13px; }
+.song-details-field input { flex: 1; padding: 6px 10px; font-size: 14px; }
+.song-details-row { display: flex; gap: 16px; margin: 12px 0; flex-wrap: wrap; }
+.song-details-note { font-size: 13px; color: var(--zune-text-dim); margin: 10px 0; }
+.song-details-status { font-size: 13px; color: var(--zune-orange); min-height: 18px; margin-top: 8px; }
