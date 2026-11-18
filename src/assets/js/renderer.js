@@ -3372,6 +3372,7 @@ class ZuneExplorer {
         // Now Playing → lyrics
         if (window.LyricsPanel) this.lyricsPanel = new window.LyricsPanel(this);
         this._setupScrollTop();
+        this._setupNowPlayingMenu();
         this.audioPlayer.on('trackchange', ({ index }) => {
             this.nowPlaying.currentIndex = index;
             this.saveNowPlaying();
@@ -4454,6 +4455,53 @@ class ZuneExplorer {
         // Also update the audio player's live queue
         this.audioPlayer.queue.push(...tracks);
         await this.saveNowPlaying();
+    }
+
+    /**
+     * Right-click on the song that's playing (player bar or now playing):
+     * the same menu as in the songs list, plus "show in songs list".
+     */
+    _setupNowPlayingMenu() {
+        const onMenu = (e) => {
+            const f = this.audioPlayer?.getCurrentFile?.();
+            if (!f || !f.path) return;
+            e.preventDefault();
+            e.stopPropagation();
+            const t = this.musicLibrary.tracks.get(f.path);
+            if (!t) {
+                this.showToast?.('this song isn\u2019t in your library (it\u2019s playing from the zune) \u2014 right-click it in the songs list instead');
+                return;
+            }
+            const extra = [];
+            const st = this.songsTable;
+            if (st && st.root.isConnected) {
+                extra.push({ label: 'Show in Songs List', action: () => this.revealInSongsTable(f.path) });
+            }
+            this.showMusicItemContextMenu(e, [this.getTrackFile({ ...t, path: f.path })], extra);
+        };
+        for (const id of ['player-bar-info', 'player-bar-art', 'np-title', 'np-artist', 'np-art']) {
+            document.getElementById(id)?.addEventListener('contextmenu', onMenu);
+        }
+    }
+
+    /** Scroll the songs table to a song and select it. */
+    revealInSongsTable(path) {
+        const st = this.songsTable;
+        if (!st) return;
+        let i = st.view.findIndex(r => r.path === path);
+        if (i === -1 && (st.query || st.poorOnly || st.whereFilter !== 'all')) {
+            // Hidden by a search or filter: clear them and look again
+            st.query = ''; st.poorOnly = false; st.whereFilter = 'all';
+            if (st.search) st.search.value = '';
+            this._songsTableUpdate(false);
+            i = st.view.findIndex(r => r.path === path);
+        }
+        if (i === -1) return;
+        st.selected = new Set([path]);
+        st.anchor = path;
+        this._songsTableSelChanged();
+        const body = st.body;
+        st.scroller.scrollToOffset(Math.max(0, i * 34 - (body.clientHeight / 2) + 17));
     }
 
     showMusicItemContextMenu(e, tracks, extraItems = []) {
