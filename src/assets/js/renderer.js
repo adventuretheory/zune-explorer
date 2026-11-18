@@ -4554,6 +4554,9 @@ class ZuneExplorer {
         // The "restore" button: clean up the sound (volume, hiss, clicks, rumble)
         if (paths.length === 1 && !t.drm) items.push({ label: 'Restore Sound\u2026', action: () => this.openRestoreDialog(paths[0]) });
         items.push({ label: `Find Album Art Online${n}`, action: () => this.addAlbumArt(paths) });
+        // Wrong cover: look it up again and put the new one in its place (not
+        // copied from the album's other songs, which may have the wrong one too)
+        items.push({ label: `Replace Album Art (Find Online)${n}`, action: () => this.addAlbumArt(paths, { replace: true, noSiblings: true }) });
         items.push({ label: `Set Album Art from Image\u2026${n}`, action: () => this.addAlbumArt(paths, { pickImage: true }) });
         if (paths.length === 1) items.push({ label: 'Search the Web for Album Art', action: () => this.searchCoverOnline(paths[0]) });
         items.push({ label: `Paste Album Art${n}`, action: () => this.addAlbumArt(paths, { fromClipboard: true }) });
