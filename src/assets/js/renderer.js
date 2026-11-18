@@ -4477,6 +4477,17 @@ class ZuneExplorer {
             if (st && st.root.isConnected) {
                 extra.push({ label: 'Show in Songs List', action: () => this.revealInSongsTable(f.path) });
             }
+            // On the Zune too: remove it from there
+            const h = this._zuneMembership?.onZune?.get(f.path);
+            if (h != null) {
+                const zp = this.zunePanel;
+                extra.push({
+                    label: 'Remove from Zune',
+                    action: () => (zp && zp.state === 'connected' && zp.browseData
+                        ? zp.removeFromDevice([h])
+                        : this.showToast?.('connect your zune (and open it in the zune panel) to remove songs from it')),
+                });
+            }
             this.showMusicItemContextMenu(e, [this.getTrackFile({ ...t, path: f.path })], extra);
         };
         for (const id of ['player-bar-info', 'player-bar-art', 'np-title', 'np-artist', 'np-art']) {
