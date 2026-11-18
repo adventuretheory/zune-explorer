@@ -6363,7 +6363,6 @@ class ZuneExplorer {
                     e.stopPropagation();
                     const r = state.view.find(x => x.path === zb.dataset.zunePath);
                     if (r) {
-                        this._songsTableSelectPlayed(r.path);
                         this._playZuneOnly(r);
                     }
                     return;
@@ -6377,9 +6376,9 @@ class ZuneExplorer {
                     // Double-click / double-tap plays it
                     if (e.detail >= 2 && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
                         // The first click of the double-click picked just this song:
-                        // put back the songs that were selected before it
+                        // put back exactly the songs that were ticked before it (playing ticks nothing)
                         if (state.beforeClick && state.beforeClick.path === p) {
-                            state.selected = new Set([...state.beforeClick.selected, p]);
+                            state.selected = new Set(state.beforeClick.selected);
                             state.beforeClick = null;
                             this._songsTableSelChanged();
                         }
@@ -6410,7 +6409,6 @@ class ZuneExplorer {
                 e.stopPropagation();
                 const r = state.view.find(x => x.path === btn.dataset.path);
                 if (r) {
-                    this._songsTableSelectPlayed(r.path);
                     this._songRowPlay(r, state.view.filter(x => !x.zuneOnly));
                 }
             });
@@ -7082,15 +7080,6 @@ class ZuneExplorer {
         }
         if (this._zuneMembershipAgain) { this._zuneMembershipAgain = false; this._loadZuneMembership(); return; }
         this._songsTableRefreshSoon(0);
-    }
-
-    /** Playing a song selects it too, added to any songs already selected (never clearing them). */
-    _songsTableSelectPlayed(path) {
-        const st = this.songsTable;
-        if (!st || st.selected.has(path)) return;
-        st.selected.add(path);
-        st.anchor = path;
-        this._songsTableSelChanged();
     }
 
     _songsTableRefreshSoon(wait = 600) {
