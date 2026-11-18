@@ -4551,6 +4551,8 @@ class ZuneExplorer {
             ? st.rows.filter(r => r.zuneOnly && st.selected.has(r.path)).map(r => r.handle) : [];
         const all = paths.length + zuneHandles.length;
         items.push({ label: all === 1 ? 'Fix Song Details\u2026' : `Fix Details of ${all} Songs\u2026`, action: () => new window.SongDetailsDialog(this, { paths, handles: zuneHandles }) });
+        // The "restore" button: clean up the sound (volume, hiss, clicks, rumble)
+        if (paths.length === 1 && !t.drm) items.push({ label: 'Restore Sound\u2026', action: () => this.openRestoreDialog(paths[0]) });
         items.push({ label: `Find Album Art Online${n}`, action: () => this.addAlbumArt(paths) });
         items.push({ label: `Set Album Art from Image\u2026${n}`, action: () => this.addAlbumArt(paths, { pickImage: true }) });
         if (paths.length === 1) items.push({ label: 'Search the Web for Album Art', action: () => this.searchCoverOnline(paths[0]) });
