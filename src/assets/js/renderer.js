@@ -6242,6 +6242,21 @@ class ZuneExplorer {
             const state = { root, head, body, search, count, poor, check, selbar, rows: [], view: [], sortKey: 'title', sortDir: 1, query: '', poorOnly: false,
                 selected: new Set(), anchor: null, where, whereFilter: 'all' };
             shuffle.addEventListener('click', () => this._songsTableShuffle());
+            if (!this._selUndoKeys) {
+                this._selUndoKeys = true;
+                document.addEventListener('keydown', (e) => {
+                    const st = this.songsTable;
+                    if (!st || !st.root.isConnected || st.root.offsetParent === null) return;
+                    if (e.target.closest?.('input:not([type=checkbox]), textarea, [contenteditable], .restore-overlay')) return;
+                    if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
+                    const k = e.key.toLowerCase();
+                    const redo = (k === 'z' && e.shiftKey) || (k === 'y' && !e.shiftKey);
+                    if ((k === 'z' && !e.shiftKey) || redo) {
+                        e.preventDefault(); e.stopPropagation();
+                        this._songsTableUndoSel(redo);
+                    }
+                }, true);
+            }
             root.tabIndex = -1; // so \u2318A / Delete / Esc reach the table
             root.addEventListener('keydown', (e) => {
                 if (e.target.closest('input, textarea')) return;
@@ -6683,9 +6698,41 @@ class ZuneExplorer {
         preview.focus();
     }
 
+    /**
+     * Ticks can be undone (\u2318Z / Ctrl+Z) and redone (\u21e7\u2318Z / Ctrl+Y):
+     * every change remembers the ticks from before it.
+     */
+    _songsTableHistory(st) {
+        if (!st.lastSel) { st.lastSel = new Set(); st.undoSel = []; st.redoSel = []; }
+        const same = st.lastSel.size === st.selected.size && [...st.selected].every(p => st.lastSel.has(p));
+        if (same) return;
+        if (!st.restoringSel) {
+            st.undoSel.push(st.lastSel);
+            if (st.undoSel.length > 100) st.undoSel.shift();
+            st.redoSel = [];
+        }
+        st.restoringSel = false;
+        st.lastSel = new Set(st.selected);
+    }
+
+    _songsTableUndoSel(redo = false) {
+        const st = this.songsTable;
+        if (!st || !st.undoSel) return false;
+        const from = redo ? st.redoSel : st.undoSel;
+        const to = redo ? st.undoSel : st.redoSel;
+        if (!from.length) { this.showToast?.(redo ? 'nothing to redo' : 'nothing to undo'); return true; }
+        to.push(new Set(st.selected));
+        st.selected = from.pop();
+        st.restoringSel = true;
+        this._songsTableSelChanged();
+        this.showToast?.(`${redo ? 'redone' : 'undone'} \u2014 ${st.selected.size} song${st.selected.size === 1 ? '' : 's'} ticked`);
+        return true;
+    }
+
     _songsTableSelChanged() {
         const st = this.songsTable;
         if (!st) return;
+        this._songsTableHistory(st);
         // Just move the highlight: redrawing the rows would swallow a double-click
         for (const row of st.body.querySelectorAll('.vs-row')) {
             const on = st.selected.has(row.dataset.trackPath);
@@ -6715,7 +6762,7 @@ class ZuneExplorer {
         if (!n) {
             const tip = document.createElement('span');
             tip.className = 'songs-table-selhint';
-            tip.textContent = 'tick songs on the left to select them (shift-tick for a range) \u00b7 double-click to play \u00b7 \u2318A for all';
+            tip.textContent = 'tick songs on the left to select them (shift-tick for a range) \u00b7 double-click to play \u00b7 \u2318A for all \u00b7 \u2318Z to undo ticks';
             bar.appendChild(tip);
             return;
         }
